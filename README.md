@@ -102,5 +102,5 @@ far2/eval      episode harness (JSONL telemetry incl. D/R/L, residual_traj,
                probes (R0/R1/R4)
 scripts        run_campaign.py funnel + one script per phase + ablations +
                interventions + probes + transfer + smoke + report
-tests          pytest: the "not mockers" layer (125 tests)
+tests          pytest: the "not mockers" layer (139 tests incl. scientific contracts)
 ```
