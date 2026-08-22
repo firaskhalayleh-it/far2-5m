@@ -1,0 +1,20 @@
+# experiment outputs — evidence lives on disk, identity lives in fingerprints
+runs/
+runs_mini/
+runs_confirm/
+runs_*/
+
+# checkpoints anywhere
+*.pt
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
