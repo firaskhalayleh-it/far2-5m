@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from far2.config import ModelConfig
+from far2.config import INCONSISTENT, UNDERDET, ModelConfig
 from far2.models.base import ModelOutput, ReasoningModel, gather_ans
 from far2.models.layers import (MASK_FILL, MHA, MLP, Block, attn_entropy,
                                 n_params, sig_embedding)
@@ -199,7 +199,10 @@ class FAR2Model(ReasoningModel):
         return F.softmax(scores, dim=-1)                          # [B,V,S]
 
     def _goal(self, H, batch):
-        if not self.cfg.protected_goal:
+        # "goal" in disable_actions: the channel's parameters exist (param
+        # identity with the reference model) but it is NEVER consulted —
+        # required for slot_recurrent_bind to be a true zero-mechanism C
+        if not self.cfg.protected_goal or "goal" in self.cfg.disable_actions:
             return None
         gm = batch["goal_mask"]
         scores = (H @ self.goal_query) / (self.cfg.d_model ** 0.5)
@@ -262,28 +265,39 @@ class FAR2Model(ReasoningModel):
         return torch.where(req == 1, torch.full_like(keep, act), keep)
 
     def _bind_collision(self, B_mat, Z, batch, allowed):
-        """Binding-space collision for the episode's declared pair:
-        C = Overlap(B_x, B_y) * JSD(P_x, P_y), where P_e decodes the
-        binding-weighted state. This compares CONCEPTS (who owns the
-        variables), not slots with slots. Returns (C [B], SPLIT source =
-        argmax_s min(Bx, By) over allowed slots, valid mask [B] bool).
-        Heuristic signal: computed without gradient."""
+        """Binding-space collision SEARCHED over every present variable pair:
+        C(x,y) = Overlap(B_x, B_y) * JSD(P_x, P_y) where P_e decodes the
+        binding-weighted state; the signal is max over pairs. Consumes ONLY
+        internal state plus variable PRESENCE (var_pos >= 0 — derivable from
+        the tokens). The episode's declared pair (batch["pair_idx"]) is
+        NEVER read here: it is evaluation/probe metadata, and a runtime
+        consumer would hand the controller the ground-truth answer to
+        "which pair is broken" (review #3, P0-1).
+        Returns (C [B], SPLIT source slot [B], argmax pair [B,2] variable
+        indices, valid mask [B] bool). Heuristic signal: no gradient."""
         with torch.no_grad():
-            pi = batch["pair_idx"]
-            valid = pi[:, 0] >= 0
-            idx = pi.clamp_min(0)
-            ar = torch.arange(len(B_mat), device=B_mat.device)
-            Ba, Bb = B_mat[ar, idx[:, 0]], B_mat[ar, idx[:, 1]]     # [B,S]
-            overlap = torch.minimum(Ba, Bb)
-            za = torch.einsum("bs,bsd->bd", Ba, Z)
-            zb = torch.einsum("bs,bsd->bd", Bb, Z)
-            pa = F.softmax(self.head(self.dec_ln(za)), dim=-1)
-            pb = F.softmax(self.head(self.dec_ln(zb)), dim=-1)
-            m = (0.5 * (pa + pb)).clamp_min(1e-9)
-            jsd = 0.5 * ((pa * (pa.clamp_min(1e-9) / m).log()).sum(-1)
-                         + (pb * (pb.clamp_min(1e-9) / m).log()).sum(-1))
-            src = (overlap - (1 - allowed) * 1e9).argmax(-1)
-            return overlap.sum(-1) * jsd, src, valid
+            present = (batch["var_pos"] >= 0).float()             # [B,V]
+            Bm = B_mat * allowed[:, None, :]                      # [B,V,S]
+            zc = torch.einsum("bvs,bsd->bvd", Bm, Z)              # concept state
+            P = F.softmax(self.head(self.dec_ln(zc)), dim=-1).clamp_min(1e-9)
+            ov = torch.minimum(Bm[:, :, None], Bm[:, None]).sum(-1)   # [B,V,V]
+            pi_, pj_ = P[:, :, None], P[:, None]
+            m = 0.5 * (pi_ + pj_)
+            jsd = 0.5 * ((pi_ * (pi_ / m).log()).sum(-1)
+                         + (pj_ * (pj_ / m).log()).sum(-1))
+            V = ov.shape[1]
+            ok = present[:, :, None] * present[:, None]
+            ok = ok * (1 - torch.eye(V, device=ov.device))[None]
+            C = ov * jsd * ok
+            flat = C.flatten(1)
+            bC = flat.max(-1).values
+            am = flat.argmax(-1)
+            xy = torch.stack([am // V, am % V], dim=1)            # [B,2]
+            ar = torch.arange(len(Bm), device=Bm.device)
+            Bx, By = Bm[ar, xy[:, 0]], Bm[ar, xy[:, 1]]           # [B,S]
+            src = (torch.minimum(Bx, By) - (1 - allowed) * 1e9).argmax(-1)
+            valid = (ok.flatten(1) > 0).any(-1)
+            return bC, src, xy, valid
 
     # ---- forward -------------------------------------------------------
     def forward(self, batch, n_iters=None, ipt=False, collect=False,
@@ -312,18 +326,10 @@ class FAR2Model(ReasoningModel):
         reg_mask[: cfg.n_registers] = 1.0
         alive = torch.ones(B, device=dev)
 
-        # binding-directed SPLIT direction: learned projection of the pair's
-        # anchor difference (h_b - h_a); trains through the clone content
+        # binding-directed SPLIT direction: computed PER ITERATION from the
+        # SEARCHED collision pair (never batch["pair_idx"] — see
+        # _bind_collision). Initialized None; set in the loop when binding.
         pair_dir = None
-        if cfg.binding:
-            vp = batch["var_pos"]
-            ppos = torch.gather(vp, 1, batch["pair_idx"].clamp_min(0))
-            pd_valid = ((batch["pair_idx"][:, 0] >= 0)
-                        & (ppos.min(dim=1).values >= 0)).float()
-            ppos = ppos.clamp_min(0)
-            ar = torch.arange(B, device=dev)
-            hb_ha = H[ar, ppos[:, 1]] - H[ar, ppos[:, 0]]
-            pair_dir = (F.normalize(self.split_dir_proj(hb_ha), dim=-1), pd_valid)
         iters_used = torch.full((B,), T, dtype=torch.long, device=dev)
         counts = {k: torch.zeros(B, device=dev) for k in ("expand", "split", "reconsider")}
 
@@ -440,11 +446,21 @@ class FAR2Model(ReasoningModel):
             chosen = sig.get(cfg.collision_signal, sig["C"])
             chosen_max = chosen.flatten(1).max(-1).values           # [B]
             bind_src = None
-            if cfg.collision_signal == "bind" and B_mat is not None:
-                bC, bsrc, bvalid = self._bind_collision(
+            pair_dir = None
+            if B_mat is not None:
+                bC, bsrc, bxy, bvalid = self._bind_collision(
                     B_mat.detach(), Z.detach(), batch, act_pair)
-                chosen_max = torch.where(bvalid, bC, chosen_max)
-                bind_src = (bsrc, bvalid)
+                sig["bind"] = bC        # searched signal: a P4 candidate
+                if cfg.collision_signal == "bind":
+                    chosen_max = torch.where(bvalid, bC, chosen_max)
+                    bind_src = (bsrc, bvalid)
+                # SPLIT direction from the SEARCHED pair's anchors —
+                # differentiable through H (only the search is no-grad)
+                ppos = torch.gather(batch["var_pos"], 1, bxy).clamp_min(0)
+                arB = torch.arange(B, device=dev)
+                hb_ha = H[arB, ppos[:, 1]] - H[arB, ppos[:, 0]]
+                pair_dir = (F.normalize(self.split_dir_proj(hb_ha), dim=-1),
+                            bvalid.float())
             C_max = torch.maximum(C_max, chosen_max)
             if collect:
                 # the signal at t informs the action at t, so t belongs to the
@@ -454,9 +470,9 @@ class FAR2Model(ReasoningModel):
                 C_max_pre = torch.where(pre, torch.maximum(C_max_pre, chosen_max),
                                         C_max_pre)
                 for k, v in sig.items():
-                    if k in ("C_max", "C_argmax_pair") or v.dim() != 3:
-                        continue
-                    flat = v.flatten(1).max(-1).values
+                    if k in ("C_max", "C_argmax_pair") or v.dim() not in (1, 3):
+                        continue          # dim 1: per-sample (searched bind C)
+                    flat = v.flatten(1).max(-1).values if v.dim() == 3 else v
                     prev = sig_pre.get(k)
                     sig_pre[k] = (flat.clone() if prev is None else
                                   torch.where(pre, torch.maximum(prev, flat),
@@ -617,6 +633,29 @@ class FAR2Model(ReasoningModel):
 
         logits = self._decode(Qa, Z, active, g_tok)
 
+        # ⑧ OPERATIONAL epistemic decision (review #3): the answer-level head
+        # is a decision component, not a regularizer — at inference a
+        # non-DERIVED verdict ROUTES the output to the corresponding
+        # abstention token instead of the decoded digits. Training keeps the
+        # auxiliary CE below (targets still teach the decoder the abstention
+        # tokens; the head decides when to emit them).
+        epi_logits = None
+        if cfg.epistemic and "epistemic" in self.unlocked:
+            pooled_f = (Z * active[..., None]).sum(1) / n_active_per(active)
+            epi_logits = self.ans_epi_head(pooled_f)
+            if not self.training:
+                from far2.data.vocab import VOCAB
+                route = epi_logits.argmax(-1)                     # [B]
+                for cls, tok in ((UNDERDET, "UNDERDETERMINED"),
+                                 (INCONSISTENT, "NO_SOLUTION")):
+                    msk = route == cls
+                    if msk.any():
+                        one = torch.full_like(logits[msk], -1e4)
+                        one[:, 0, VOCAB.t(tok)] = 1e4
+                        if one.shape[1] > 1:
+                            one[:, 1:, VOCAB.t("PAD")] = 1e4
+                        logits[msk] = one
+
         loss_terms = {
             "state_sq": state_sq / T,
             "fp_delta": last_delta_sq,
@@ -641,9 +680,8 @@ class FAR2Model(ReasoningModel):
                     2, tgt[:, None, :].expand(-1, S, -1)).transpose(1, 2)
                 mix = (B_mat * pt).sum(-1).clamp_min(1e-9)
                 loss_terms["bind_nll"] = -(mix.log() * vmask).sum() / vmask.sum()
-        if cfg.epistemic and "epistemic" in self.unlocked:
-            pooled_f = (Z * active[..., None]).sum(1) / n_active_per(active)
-            loss_terms["ans_epi_logits"] = self.ans_epi_head(pooled_f)
+        if epi_logits is not None:
+            loss_terms["ans_epi_logits"] = epi_logits
         if learned_halt and halt_feats_last is not None:
             loss_terms["halt_q_logit"] = self.halt_q(halt_feats_last).squeeze(-1)
 
@@ -673,9 +711,9 @@ class FAR2Model(ReasoningModel):
                 telemetry["bind_matrix"] = B_mat.detach()   # [B,V,S] ownership
         if collect and signals is not None:
             telemetry["signal_max"] = {
-                k: v.flatten(1).max(-1).values.tolist()
+                k: (v.flatten(1).max(-1).values if v.dim() == 3 else v).tolist()
                 for k, v in signals.items()
-                if k not in ("C_max", "C_argmax_pair") and v.dim() == 3}
+                if k not in ("C_max", "C_argmax_pair") and v.dim() in (1, 3)}
         if collect and sig_pre:
             telemetry["signal_max_pre"] = {k: v.tolist()
                                            for k, v in sig_pre.items()}

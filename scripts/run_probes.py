@@ -15,6 +15,7 @@ the "concept separation vs slot-count increase" claim needs."""
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,7 +84,11 @@ def main():
         results["control"] = probe_run(args.control, device, args)
         show("control", results["control"])
 
-    out_path = os.path.join(args.out, "probes_summary.json")
+    # seed-tagged evidence: the acceptance aggregator enforces one summary
+    # per declared seed — a single global file cannot prove seed coverage
+    m_seed = re.search(r"_seed(\d+)$", args.run.rstrip("/"))
+    stag = f"_seed{m_seed.group(1)}" if m_seed else ""
+    out_path = os.path.join(args.out, f"probes_summary{stag}.json")
     with open(out_path, "w") as fh:
         json.dump({"run": args.run, "control": args.control,
                    "strict": args.strict, **results}, fh, indent=2)

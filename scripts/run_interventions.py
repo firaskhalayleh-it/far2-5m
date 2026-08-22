@@ -21,6 +21,7 @@ Run on a trained FAR² checkpoint (default: the Phase 3b adaptive run)."""
 import json
 import os
 import random
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -174,7 +175,11 @@ def main():
         print(f"    placebo    : force on correct-no-condition "
               f"{r['placebo_flip']:>6.1%} flip wrong  (n={r['placebo_n']})")
 
-    out_path = os.path.join(args.out, "interventions_summary.json")
+    # seed-tagged evidence: the acceptance aggregator enforces one summary
+    # per declared seed — a single global file cannot prove seed coverage
+    m_seed = re.search(r"_seed(\d+)$", args.run.rstrip("/"))
+    tag = f"_seed{m_seed.group(1)}" if m_seed else ""
+    out_path = os.path.join(args.out, f"interventions_summary{tag}.json")
     with open(out_path, "w") as fh:
         json.dump({"run": args.run, "results": results}, fh, indent=2)
     print(f"\nWritten to {out_path}")

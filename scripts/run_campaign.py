@@ -35,44 +35,54 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 
 
 def _package_hash() -> str:
-    """One hash over every .py in far2/ plus the shared script helpers — a
-    step's behavior depends on the whole imported package, not just its own
-    script file (review blocker: fingerprints covered script+args only)."""
+    """One hash over every .py in far2/ AND every script in scripts/ — a
+    step's behavior depends on the whole imported package including sibling
+    scripts (run_phase3b imports run_phase3a, ...), not just its own file
+    (review #3: fingerprints omitted imported scripts)."""
     h = hashlib.sha256()
-    files = [os.path.join(SCRIPTS, "_common.py")]
+    files = []
     for base, _, names in sorted(os.walk(os.path.join(ROOT, "far2"))):
         files += [os.path.join(base, n) for n in sorted(names)
                   if n.endswith(".py")]
+    files += sorted(os.path.join(SCRIPTS, n) for n in os.listdir(SCRIPTS)
+                    if n.endswith(".py"))
     for f in files:
         h.update(f.encode())
         h.update(open(f, "rb").read())
     return h.hexdigest()
 
 
+def _hash_file_into(h, path: str) -> None:
+    h.update(path.encode())
+    if os.path.exists(path):
+        h.update(hashlib.sha256(open(path, "rb").read()).hexdigest().encode())
+    else:
+        h.update(b"missing")
+
+
 def fingerprint(st, pkg_hash: str) -> str:
     """Identity of a step: a completed step is only skippable on resume if
-    the script bytes, its arguments, the far2 package code, AND the upstream
-    checkpoints it consumes (--run/--control) are all unchanged."""
+    the script bytes, its arguments, the far2 package + scripts code, every
+    checkpoint named in its argv (--run/--control/--ckpt/--control-ckpt),
+    AND its declared implicit dependencies (deps: selected_signal.json,
+    reused control checkpoints, ...) are all unchanged."""
     h = hashlib.sha256()
     h.update(open(os.path.join(SCRIPTS, st["script"]), "rb").read())
     h.update(json.dumps(st["argv"]).encode())
     h.update(pkg_hash.encode())
     argv = st["argv"]
     for i, a in enumerate(argv[:-1]):
-        if a in ("--run", "--control"):
-            ck = os.path.join(ROOT, argv[i + 1], "ckpt.pt")
-            h.update(ck.encode())
-            if os.path.exists(ck):
-                h.update(hashlib.sha256(open(ck, "rb").read()).hexdigest()
-                         .encode())
-            else:
-                h.update(b"missing")
+        if a in ("--run", "--control", "--ckpt", "--control-ckpt"):
+            _hash_file_into(h, os.path.join(ROOT, argv[i + 1], "ckpt.pt"))
+    for dep in st.get("deps", ()):
+        _hash_file_into(h, os.path.join(ROOT, dep))
     return h.hexdigest()[:16]
 
 
-def step(name, script, *argv, stop_on_fail=False, est_min=0):
+def step(name, script, *argv, stop_on_fail=False, est_min=0, deps=()):
     return {"name": name, "script": script, "argv": list(argv),
-            "stop_on_fail": stop_on_fail, "est_min": est_min}
+            "stop_on_fail": stop_on_fail, "est_min": est_min,
+            "deps": list(deps)}
 
 
 def pilot_chain(seed: int, out: str, mini: bool) -> list[dict]:
@@ -109,12 +119,21 @@ def pilot_chain(seed: int, out: str, mini: bool) -> list[dict]:
              "--seed", s, *trn, stop_on_fail=True, est_min=6),
         step("P3b-autonomous-bind", "run_phase3b.py", "--substrate", "bind",
              "--steps", "2500", "--eval-samples", "400", "--seed", s, *trn,
-             est_min=95),
+             est_min=95,
+             # implicit inputs P3b consumes without naming them in argv:
+             # the P4 selection and the phase3a controls it reuses
+             deps=[f"{out}/selected_signal.json",
+                   f"{out}/phase3a_fixed16_bind_seed{seed}/ckpt.pt",
+                   f"{out}/phase3a_fixed4_bind_seed{seed}/ckpt.pt"]),
         step("R8R9-interventions", "run_interventions.py",
              "--run", f"{out}/phase3b_adaptive_bind_seed{seed}",
              "--ops", "split", "expand", "--n", n_interv, "--difficulty", "4",
              "--iters", "8", "--out", out, est_min=25),
+        # checkpoints passed EXPLICITLY (no auto-discovery) so the
+        # fingerprint hashes exactly what the step evaluates
         step("transfer", "run_transfer.py", "--eval-samples", "500",
+             "--ckpt", f"{out}/phase3b_adaptive_bind_seed{seed}",
+             "--control-ckpt", f"{out}/phase0_slot_recurrent_seed{seed}",
              "--seed", s, *trn, est_min=20),
     ]
     return chain

@@ -50,14 +50,16 @@ def main():
     ranked = sorted(aurocs.items(), key=lambda kv: -(kv[1] if kv[1] == kv[1] else -1))
     for k, v in ranked:
         marker = ("  <- C = Sim x Div (the FAR2 hypothesis)" if k == "C" else
-                  "  (post-action: displayed, NOT selectable)"
-                  if k.endswith("_post") else "")
+                  "  <- searched over all pairs (runtime-legitimate)"
+                  if k == "bind" else
+                  "  (needs ground truth / post-action: displayed, NOT "
+                  "selectable)" if k.endswith(("_post", "_probe")) else "")
         print(f"  {k:<18} {v:.3f}{marker}")
 
-    eligible = [(k, v) for k, v in ranked if not k.endswith("_post")]
+    eligible = [(k, v) for k, v in ranked
+                if not k.endswith(("_post", "_probe"))]
     best_name, best = eligible[0] if eligible else (None, float("nan"))
-    mapped = {"C_max_over_iters": "C", "bind_overlap": "bind",
-              "bind_overlap_post": "bind"}
+    mapped = {"C_max_over_iters": "C"}
 
     gate = Gate("Phase 4 · signal tournament")
     sel_ok = best == best and best > 0.55

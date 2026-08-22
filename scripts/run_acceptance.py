@@ -4,20 +4,25 @@ seeds, never eyeballed:
 
   M1 computation adaptation    in-dist competence + depth grid + T16
                                stability + L-matched counterexample
-  M2 representation adaptation phase3b quartet (vs fixed16 / random /
-                               compute ratio rho / surface regression)
-  M3 operator transfer         held-out sym_poly splits + rational_trap
-plus >= 2 of: P5a reconsideration · P5b halting · P6 epistemics · P7 goal ·
-interventions causal chain · R4 probes — every one judged from eval records
-on disk with the same thresholds its phase gate uses; nothing hardcoded.
+  M2 representation adaptation P3a-necessity prerequisite + phase3b quartet
+                               (vs fixed16 / random / rho / surface /
+                               binding separation)
+  M3 operator transfer         held-out sym_poly splits + rational_trap,
+                               capability-validated against the checkpoint
+plus >= 2 of: P5a reconsideration · P5b halting · P6 epistemics (incl. the
+shuffled-label ablation control) · P7 goal (incl. the scrambled-goal
+ablation control) · interventions causal chain · R4 probes — every one
+judged from records on disk with its phase gate's thresholds.
 
-Discipline:
-  · counts are POOLED across seeds for the tests (per-seed accuracy reported
-    as mean ± sd alongside);
-  · SEED COMPLETENESS is hard: evidence covering a subset of --seeds is
-    NOT-TESTABLE — a lucky-seed subset must never masquerade as the claim;
-  · anything missing or malformed on disk is NOT-TESTABLE — it can fail the
-    rule but never pass it.
+Enforcement discipline (review #3):
+  · counts POOLED across seeds (per-seed accuracy mean ± sd alongside);
+  · SEED COMPLETENESS is hard — evidence covering a subset of --seeds is
+    NOT-TESTABLE, and interventions/probes need one summary PER seed;
+  · CONFIRM BUDGET is hard — a run trained below --min-steps is smoke/pilot
+    evidence and cannot feed acceptance;
+  · fewer than 2 seeds → the verdict is NOT ACCEPTED unconditionally;
+  · anything missing or malformed is NOT-TESTABLE — it can fail the rule
+    but never pass it.
 
     python scripts/run_acceptance.py --out runs_confirm --seeds 0 1 2
 """
@@ -30,13 +35,22 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from far2.eval.metrics import assertion_counts, recovery_counts
+from far2.eval.metrics import (assertion_counts, binding_separation,
+                               recovery_counts)
 from far2.eval.stats import (non_inferiority, ols2, rate_at_least,
                              rate_at_most, superiority, two_prop_test)
 from far2.utils.logging import read_jsonl
 
 HARD = {"carry_add": 8, "expr_eval": 8, "multiply": 4, "differentiate": 8}
 TRAIN_T = 8                      # phase2 models train at T=8; 16 probes beyond
+BUDGET = {"min_steps": 5000}     # set from --min-steps in main()
+
+
+def run_cfg(out, rundir):
+    try:
+        return json.load(open(os.path.join(out, rundir, "config.json")))
+    except Exception:
+        return None
 
 
 def load(out, pattern, seeds, tag):
@@ -49,8 +63,8 @@ def load(out, pattern, seeds, tag):
     return got
 
 
-def complete(c, got, seeds, what) -> bool:
-    """Hard seed-completeness enforcement."""
+def complete(c, got, seeds, what, out=None, pattern=None) -> bool:
+    """Hard seed-completeness AND confirm-budget enforcement."""
     if not got:
         c.not_testable(f"no {what} runs found")
         return False
@@ -60,6 +74,18 @@ def complete(c, got, seeds, what) -> bool:
         c.not_testable(f"{what}: seeds {missing} missing (have {have}) — "
                        "rerun them or drop them from --seeds")
         return False
+    if out is not None and pattern is not None and BUDGET["min_steps"]:
+        short = []
+        for s, _ in got:
+            cfg = run_cfg(out, pattern.format(seed=s)) or {}
+            steps = cfg.get("train", {}).get("steps", 0)
+            if steps < BUDGET["min_steps"]:
+                short.append(f"seed{s}={steps}")
+        if short:
+            c.not_testable(f"{what}: below confirm budget ({', '.join(short)} "
+                           f"steps < {BUDGET['min_steps']}) — smoke/pilot "
+                           "evidence cannot feed acceptance")
+            return False
     return True
 
 
@@ -124,9 +150,10 @@ class Claim:
 # ---- mandatory ------------------------------------------------------------
 def m1_computation(out, seeds):
     c = Claim("M1 · computation adaptation (mandatory)")
-    grid = load(out, "phase2_random_seed{seed}", seeds, "depth_grid")
-    match = load(out, "phase2_random_seed{seed}", seeds, "length_match")
-    if not complete(c, grid, seeds, "phase2 depth_grid"):
+    pat = "phase2_random_seed{seed}"
+    grid = load(out, pat, seeds, "depth_grid")
+    match = load(out, pat, seeds, "length_match")
+    if not complete(c, grid, seeds, "phase2 depth_grid", out, pat):
         return c
     hard = lambda r: r["difficulty"] >= HARD.get(r["family"], 99)
     # competence floor (P2 gate 1): OOD superiority on a model that never
@@ -146,7 +173,7 @@ def m1_computation(out, seeds):
     k8, n8, _ = pooled(grid, lambda r: hard(r) and r["n_iters"] == TRAIN_T)
     ok, d = non_inferiority(k16, n16, k8, n8, margin=0.02)
     c.check(f"OOD T={2 * TRAIN_T} holds vs T={TRAIN_T} (NI 2pts)", ok, d)
-    if complete(c, match, seeds, "phase2 length_match"):
+    if complete(c, match, seeds, "phase2 length_match", out, pat):
         k0, n0, _ = pooled(match, lambda r: r["difficulty"] == 0)
         k24, n24, _ = pooled(match, lambda r: r["difficulty"] == 24)
         ok1, d1 = superiority(k0, n0, k24, n24, margin=0.05)
@@ -158,20 +185,39 @@ def m1_computation(out, seeds):
 
 def m2_representation(out, seeds, tagged):
     c = Claim("M2 · representation adaptation (mandatory)")
-    adp = load(out, f"phase3b_adaptive{tagged}_seed{{seed}}", seeds, "phase3b")
-    rnd = load(out, f"phase3b_random{tagged}_seed{{seed}}", seeds, "phase3b")
-    f16 = load(out, f"phase3a_fixed16{tagged}_seed{{seed}}", seeds, "phase3a")
-    if not complete(c, adp, seeds, "phase3b adaptive"):
+    pat_a = f"phase3b_adaptive{tagged}_seed{{seed}}"
+    pat_r = f"phase3b_random{tagged}_seed{{seed}}"
+    pat_16 = f"phase3a_fixed16{tagged}_seed{{seed}}"
+    pat_4 = f"phase3a_fixed4{tagged}_seed{{seed}}"
+    adp = load(out, pat_a, seeds, "phase3b")
+    rnd = load(out, pat_r, seeds, "phase3b")
+    f16 = load(out, pat_16, seeds, "phase3a")
+    f4 = load(out, pat_4, seeds, "phase3a")
+    if not complete(c, adp, seeds, "phase3b adaptive", out, pat_a):
         return c
     sym = lambda r: r["family"] == "symbreak"
     dq = lambda r: sym(r) and r.get("requires_distinction") == 1
-    if complete(c, f16, seeds, "fixed16 control"):
+    # PREREQUISITE (P3a stop rule at confirm scale): the benchmark must
+    # require representation, else the whole quartet is uninformative and a
+    # controller is CORRECT never to split
+    if complete(c, f4, seeds, "phase3a fixed4 (necessity prerequisite)",
+                out, pat_4) and complete(c, f16, seeds, "fixed16 control",
+                                         out, pat_16):
+        k16d, n16d, _ = pooled(f16, dq)
+        k4d, n4d, _ = pooled(f4, dq)
+        ok, d = superiority(k16d, n16d, k4d, n4d, margin=0.05)
+        if not ok:
+            c.not_testable("P3a necessity failed at confirm scale — the "
+                           f"benchmark does not require representation ({d})")
+            return c
+        c.check("prerequisite: fixed16 > fixed4 on distinction queries (+5pts)",
+                ok, d)
         ka, na, pa = pooled(adp, sym)
         kf, nf, _ = pooled(f16, sym)
         ok, d = non_inferiority(ka, na, kf, nf, margin=0.01)
         c.check("adaptive NI fixed16 (1pt)", ok, d + f" · {seed_note(pa)}")
-        # the allocation half of the claim: matching fixed16 is only
-        # interesting at materially LOWER slot-compute
+        # the allocation half: matching fixed16 is only interesting at
+        # materially LOWER slot-compute
         sc_a = (pooled_mean(adp, "active_slots")
                 * pooled_mean(adp, "iters_used"))
         sc_f = (pooled_mean(f16, "active_slots")
@@ -179,7 +225,7 @@ def m2_representation(out, seeds, tagged):
         rho = sc_a / sc_f if sc_f == sc_f and sc_f else float("nan")
         c.check("compute ratio rho <= 0.70", rho == rho and rho <= 0.70,
                 f"rho={rho:.2f} ({sc_a:.1f} vs {sc_f:.1f} slot·iters)")
-    if complete(c, rnd, seeds, "rate-matched random arm"):
+    if complete(c, rnd, seeds, "rate-matched random arm", out, pat_r):
         ka, na, _ = pooled(adp, dq)
         kr, nr, _ = pooled(rnd, dq)
         ok, d = superiority(ka, na, kr, nr, margin=0.03)
@@ -196,36 +242,60 @@ def m2_representation(out, seeds, tagged):
             f"(p={s.get('p1_pos', float('nan')):.4f}) "
             f"beta_L={s.get('beta2', float('nan')):+.2f} "
             f"(p={s.get('p2_pos', float('nan')):.4f}) n={s.get('n', 0)}")
+    # SPLIT claims are about concept separation, not slot count: the global
+    # requirement (CRITERIA acceptance) — binding separation significant
+    bind = binding_separation([r for _, recs in adp for r in recs])
+    ok, d = superiority(bind.get("k_split", 0), bind.get("n_split", 0),
+                        bind.get("k_ctrl", 0), bind.get("n_ctrl", 0), margin=0.0)
+    c.check("binding separation after split > control rate", ok, d)
     return c
 
 
 def m3_transfer(out, seeds, tagged):
     c = Claim("M3 · cross-domain operator transfer (mandatory)")
-    far2 = []
+    far2, far2_pat = [], None
     for cand in (f"ablate_far2_bind_seed{{seed}}",
                  f"phase3b_adaptive{tagged}_seed{{seed}}"):
         far2 = load(out, cand, seeds, "transfer")
         if far2:
+            far2_pat = cand
             break
-    ctrl = []
+    ctrl, ctrl_pat = [], None
     for cand in ("ablate_slot_recurrent_bind_seed{seed}",
                  "ablate_slot_recurrent_5m_seed{seed}",
                  "phase0_slot_recurrent_seed{seed}"):
         ctrl = load(out, cand, seeds, "transfer")
         if ctrl:
+            ctrl_pat = cand
             break
-    if not complete(c, far2, seeds, "FAR2 transfer"):
+    if not complete(c, far2, seeds, "FAR2 transfer", out, far2_pat):
         return c
-    sp = [r for _, recs in far2 for r in recs if r["family"] == "sym_poly"]
-    tp = sum(1 for r in sp if r.get("requires_distinction") == 1
-             and (r.get("split_count") or 0) > 0)
-    n_need = sum(1 for r in sp if r.get("requires_distinction") == 1)
-    fp = sum(1 for r in sp if r.get("requires_distinction") == 0
-             and (r.get("split_count") or 0) > 0)
-    n_ctrl = sum(1 for r in sp if r.get("requires_distinction") == 0)
-    ok, d = superiority(tp, n_need, fp, n_ctrl, margin=0.10)
-    c.check("spontaneous splits track the unseen condition (+10pts)", ok, d)
-    if complete(c, ctrl, seeds, "slot-recurrent control transfer"):
+    # capability validation: the claims below are NOT-TESTABLE on a
+    # checkpoint that cannot express the operator (review #3) — a zero from
+    # an absent mechanism must never be scored as a failed mechanism
+    caps = {s: (run_cfg(out, far2_pat.format(seed=s)) or {}).get("model", {})
+            for s in seeds}
+    can_split = all(m.get("adaptive_slots") and m.get("binding")
+                    for m in caps.values())
+    can_recon = all(m.get("reconsider") for m in caps.values())
+    if can_split:
+        sp = [r for _, recs in far2 for r in recs if r["family"] == "sym_poly"]
+        tp = sum(1 for r in sp if r.get("requires_distinction") == 1
+                 and (r.get("split_count") or 0) > 0)
+        n_need = sum(1 for r in sp if r.get("requires_distinction") == 1)
+        fp = sum(1 for r in sp if r.get("requires_distinction") == 0
+                 and (r.get("split_count") or 0) > 0)
+        n_ctrl = sum(1 for r in sp if r.get("requires_distinction") == 0)
+        ok, d = superiority(tp, n_need, fp, n_ctrl, margin=0.10)
+        c.check("spontaneous splits track the unseen condition (+10pts)", ok, d)
+    else:
+        c.not_testable("checkpoint lacks adaptive_slots+binding — the split "
+                       "transfer claim needs the full-featured arm")
+    if not can_recon:
+        c.not_testable("checkpoint lacks RECONSIDER — trap-recovery transfer "
+                       "needs the full-featured arm")
+    elif complete(c, ctrl, seeds, "slot-recurrent control transfer",
+                  out, ctrl_pat):
         rt = lambda recs: [r for r in recs if r["family"] == "rational_trap"
                            and r.get("reconsider_label") == 1]
         kf = sum(r["correct"] for _, recs in far2 for r in rt(recs))
@@ -240,17 +310,19 @@ def m3_transfer(out, seeds, tagged):
 # ---- optional: judged from eval records with the phase gates' thresholds --
 def opt_p5a(out, seeds):
     c = Claim("opt · P5a reconsideration at matched compute")
-    arms = {a: load(out, f"phase5a_{a}_seed{{seed}}", seeds, "phase5a")
+    pats = {a: f"phase5a_{a}_seed{{seed}}"
             for a in ("reconsider", "control", "random_reset")}
-    t12 = load(out, "phase5a_control_seed{seed}", seeds, "phase5a_T12")
-    if not all(complete(c, arms[a], seeds, f"phase5a {a}") for a in arms):
+    arms = {a: load(out, p, seeds, "phase5a") for a, p in pats.items()}
+    t12 = load(out, pats["control"], seeds, "phase5a_T12")
+    if not all(complete(c, arms[a], seeds, f"phase5a {a}", out, pats[a])
+               for a in arms):
         return c
     rk = {a: pooled_counts(v, recovery_counts) for a, v in arms.items()}
     ok, d = superiority(*rk["reconsider"], *rk["control"], margin=0.05)
     c.check("recovery > control at identical compute (m=5pts)", ok, d)
     ok, d = superiority(*rk["reconsider"], *rk["random_reset"], margin=0.03)
     c.check("recovery > rate-matched random reset (m=3pts)", ok, d)
-    if complete(c, t12, seeds, "phase5a control@T12"):
+    if complete(c, t12, seeds, "phase5a control@T12", out, pats["control"]):
         k12, n12 = pooled_counts(t12, recovery_counts)
         ok, d = non_inferiority(*rk["reconsider"], k12, n12, margin=0.01)
         c.check("not worse than thinking longer (control@T12, NI 1pt)", ok, d)
@@ -266,10 +338,12 @@ def opt_p5a(out, seeds):
 
 def opt_p5b(out, seeds):
     c = Claim("opt · P5b learned halting")
-    lrn = load(out, "phase5b_learned_seed{seed}", seeds, "phase5b")
-    cnv = load(out, "phase5b_learned_seed{seed}", seeds, "converge")
-    if not (complete(c, lrn, seeds, "phase5b learned")
-            and complete(c, cnv, seeds, "phase5b converge-rule control")):
+    pat = "phase5b_learned_seed{seed}"
+    lrn = load(out, pat, seeds, "phase5b")
+    cnv = load(out, pat, seeds, "converge")
+    if not (complete(c, lrn, seeds, "phase5b learned", out, pat)
+            and complete(c, cnv, seeds, "phase5b converge-rule control",
+                         out, pat)):
         return c
     iters = pooled_mean(lrn, "iters_used")
     c.check("halting saves compute (mean iters < 7.5 of budget 8)",
@@ -288,10 +362,11 @@ def opt_p5b(out, seeds):
 
 def opt_p6(out, seeds):
     c = Claim("opt · P6 mathematical epistemic state")
-    epi = load(out, "phase6_epistemic_seed{seed}", seeds, "phase6")
-    ctl = load(out, "phase6_control_seed{seed}", seeds, "phase6")
-    if not (complete(c, epi, seeds, "phase6 epistemic")
-            and complete(c, ctl, seeds, "phase6 control")):
+    pat_e, pat_c = "phase6_epistemic_seed{seed}", "phase6_control_seed{seed}"
+    epi = load(out, pat_e, seeds, "phase6")
+    ctl = load(out, pat_c, seeds, "phase6")
+    if not (complete(c, epi, seeds, "phase6 epistemic", out, pat_e)
+            and complete(c, ctl, seeds, "phase6 control", out, pat_c)):
         return c
     ku = nu = ko = no = 0
     for _, recs in epi:
@@ -306,16 +381,31 @@ def opt_p6(out, seeds):
     kc, n2, _ = pooled(ctl, ans)
     ok, d = non_inferiority(ka, n1, kc, n2, margin=0.02)
     c.check("answerable accuracy NI control (2pts)", ok, d + f" · {seed_note(pe)}")
+    # global requirement: mechanism, not aux-loss regularization — the
+    # shuffled-label arm (identical curriculum) must be WORSE
+    pat_f, pat_s = ("ablate_far2_full_seed{seed}",
+                    "ablate_far2_epi_shuffled_seed{seed}")
+    full = load(out, pat_f, seeds, "ablation")
+    shuf = load(out, pat_s, seeds, "ablation")
+    if (complete(c, full, seeds, "ablation far2_full", out, pat_f)
+            and complete(c, shuf, seeds, "ablation epi_shuffled", out, pat_s)):
+        kf, nf = pooled_counts(full, lambda r: assertion_counts(r)[0])
+        ks, ns = pooled_counts(shuf, lambda r: assertion_counts(r)[0])
+        ok, d = superiority(ks, ns, kf, nf, margin=0.0)
+        c.check("shuffled-label control asserts MORE unsupported (mechanism, "
+                "not regularizer)", ok, d)
     return c
 
 
 def opt_p7(out, seeds):
     c = Claim("opt · P7 protected goal")
-    pro = load(out, "phase7_protected_seed{seed}", seeds, "phase7")
-    ctl = load(out, "phase7_control_seed{seed}", seeds, "phase7")
-    if not (complete(c, pro, seeds, "phase7 protected")
-            and complete(c, ctl, seeds, "phase7 control")):
+    pat_p, pat_c = "phase7_protected_seed{seed}", "phase7_control_seed{seed}"
+    pro = load(out, pat_p, seeds, "phase7")
+    ctl = load(out, pat_c, seeds, "phase7")
+    if not (complete(c, pro, seeds, "phase7 protected", out, pat_p)
+            and complete(c, ctl, seeds, "phase7 control", out, pat_c)):
         return c
+
     def viol(recs):
         sel = [r for r in recs if "goal_violation" in r]
         return (sum(r["goal_violation"] is not None for r in sel), len(sel))
@@ -332,19 +422,38 @@ def opt_p7(out, seeds):
     kb, nb, _ = pooled(ctl, lambda r: True)
     ok, d = non_inferiority(ka, na, kb, nb, margin=0.02)
     c.check("accuracy not sacrificed (NI 2pts)", ok, d + f" · {seed_note(pa)}")
+    # global requirement: protection, not an extra clean channel — the
+    # scrambled-goal arm (same params, wrong content) must violate MORE
+    pat_f, pat_s = ("ablate_far2_full_seed{seed}",
+                    "ablate_far2_goal_scrambled_seed{seed}")
+    full = load(out, pat_f, seeds, "ablation")
+    scr = load(out, pat_s, seeds, "ablation")
+    if (complete(c, full, seeds, "ablation far2_full", out, pat_f)
+            and complete(c, scr, seeds, "ablation goal_scrambled", out, pat_s)):
+        kf, nf = pooled_counts(full, viol)
+        ks, ns = pooled_counts(scr, viol)
+        ok, d = superiority(ks, ns, kf, nf, margin=0.0)
+        c.check("scrambled-goal control violates MORE (protection, not "
+                "channel)", ok, d)
     return c
 
 
-def optional_from_summary(out, fname, name, judge):
+def per_seed_summaries(out, base, seeds, name, judge):
+    """One summary file PER seed — a single global file cannot prove seed
+    coverage (review #3)."""
     c = Claim(name)
-    p = os.path.join(out, fname)
-    if not os.path.exists(p):
-        c.not_testable(f"{fname} not found")
+    missing = [s for s in seeds
+               if not os.path.exists(os.path.join(out, f"{base}_seed{s}.json"))]
+    if missing:
+        c.not_testable(f"{base}_seed<N>.json missing for seeds {missing} — "
+                       "per-seed evidence required (rerun the script per seed)")
         return c
-    try:
-        judge(c, json.load(open(p)))
-    except Exception as e:  # malformed evidence is not evidence
-        c.not_testable(f"unreadable summary: {e}")
+    for s in seeds:
+        try:
+            judge(c, json.load(open(os.path.join(out, f"{base}_seed{s}.json"))),
+                  s)
+        except Exception as e:  # malformed evidence is not evidence
+            c.not_testable(f"seed {s}: unreadable summary: {e}")
     return c
 
 
@@ -354,58 +463,61 @@ def main():
                     help="root of CONFIRM-stage runs (not the pilot)")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--substrate", choices=["standard", "bind"], default="bind")
+    ap.add_argument("--min-steps", type=int, default=5000,
+                    help="confirm-stage training budget floor; runs below it "
+                         "are NOT-TESTABLE (0 disables — wiring tests only)")
     args = ap.parse_args()
+    BUDGET["min_steps"] = args.min_steps
     tagged = "" if args.substrate == "standard" else "_bind"
     print(f"[acceptance] root={args.out} seeds={args.seeds} "
-          f"substrate={args.substrate}")
-    if len(args.seeds) < 2:
-        print("[acceptance] WARNING: fewer than 2 seeds — error bars are "
-              "undefined; the verdict below is provisional at best")
+          f"substrate={args.substrate} min_steps={args.min_steps}")
 
     mandatory = [m1_computation(args.out, args.seeds),
                  m2_representation(args.out, args.seeds, tagged),
                  m3_transfer(args.out, args.seeds, tagged)]
 
-    def judge_interventions(c, js):
+    def judge_interventions(c, js, seed):
         results = js.get("results", {})
         if not results:
-            c.not_testable("summary has no per-operator results")
+            c.not_testable(f"seed {seed}: summary has no per-operator results")
             return
         for op, r in results.items():
             v = r.get("verdict", "")
             usable = v.startswith("usage OK")
-            c.check(f"{op} R8 usage", usable, v)
+            c.check(f"s{seed} {op} R8 usage", usable, v)
             if not usable:
                 continue
             fu, us = r.get("false_usage"), r.get("usage")
             if fu == fu and us == us and fu is not None and us is not None:
-                c.check(f"{op} selective usage P(use|cond) > P(use|no-cond)",
-                        us > fu, f"{us:.1%} vs {fu:.1%}")
+                c.check(f"s{seed} {op} selective usage P(use|cond) > "
+                        "P(use|no-cond)", us > fu, f"{us:.1%} vs {fu:.1%}")
             if "necessity_k" in r:
                 ok, d = rate_at_least(r["necessity_k"], r["necessity_n"],
                                       point_min=0.10, ci_floor=0.05)
-                c.check(f"{op} necessity (blocking hurts)", ok, d)
+                c.check(f"s{seed} {op} necessity (blocking hurts)", ok, d)
             if r.get("placebo_n"):
                 ok, d = rate_at_most(r["placebo_k"], r["placebo_n"],
                                      point_max=0.15, ci_ceiling=0.30)
-                c.check(f"{op} placebo damage <= 15% (specificity)", ok, d)
+                c.check(f"s{seed} {op} placebo damage <= 15% (specificity)",
+                        ok, d)
 
-    def judge_probes(c, js):
+    def judge_probes(c, js, seed):
         r = js.get("run", {})
         if "error" in r or "bound" not in r:
-            c.not_testable(r.get("error", "no probe result"))
+            c.not_testable(f"seed {seed}: " + r.get("error", "no probe result"))
             return
-        c.check("R4 bound >= chance+20pts", r["bound"] >= r["chance"] + 0.20,
+        c.check(f"s{seed} R4 bound >= chance+20pts",
+                r["bound"] >= r["chance"] + 0.20,
                 f"bound {r['bound']:.1%} chance {r['chance']:.1%}")
-        c.check("R4 separation >= 15pts + McNemar",
+        c.check(f"s{seed} R4 separation >= 15pts + McNemar",
                 r["separation_index"] >= 0.15 and r["mcnemar_p"] < 0.05,
                 f"sep {r['separation_index']:+.1%} p={r['mcnemar_p']:.2e}")
 
     optional = [
-        optional_from_summary(args.out, "interventions_summary.json",
-                              "opt · do() causal chain", judge_interventions),
-        optional_from_summary(args.out, "probes_summary.json",
-                              "opt · R4 binding probes", judge_probes),
+        per_seed_summaries(args.out, "interventions_summary", args.seeds,
+                           "opt · do() causal chain", judge_interventions),
+        per_seed_summaries(args.out, "probes_summary", args.seeds,
+                           "opt · R4 binding probes", judge_probes),
         opt_p5a(args.out, args.seeds),
         opt_p5b(args.out, args.seeds),
         opt_p6(args.out, args.seeds),
@@ -418,6 +530,12 @@ def main():
     n_m = sum(c.ok for c in mandatory)
     n_o = sum(c.ok for c in optional)
     verdict = n_m == 3 and n_o >= 2
+    if len(args.seeds) < 2:
+        # error bars are undefined on one seed: the rule can FAIL but a
+        # single seed can never certify acceptance (review #3)
+        print("\n  HARD RULE: fewer than 2 seeds — acceptance is impossible; "
+              "rerun with --seeds covering >= 2 trained seeds")
+        verdict = False
     print(f"\n  mandatory: {n_m}/3 · optional: {n_o}/{len(optional)} "
           f"(need 3 + >=2)")
     print(f"  VERDICT: {'ACCEPTED at 5M' if verdict else 'NOT ACCEPTED'}"

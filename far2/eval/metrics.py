@@ -177,18 +177,14 @@ def signal_aurocs(records) -> dict[str, float]:
         else "C_max"
     if all(ckey in r for r in sel):
         out["C_max_over_iters"] = auroc([r[ckey] for r in sel], labels)
-    # binding-substrate candidate: ownership overlap of the declared pair —
-    # measured on the FINAL state. Under a BLOCKED evaluation (no expand or
-    # split ever fired: the P4 protocol) the final state IS pre-action and
-    # the candidate is legitimately eligible; if any action fired, the key
-    # says _post whenever the rest of the tournament is pre-action
+    # declared-pair ownership overlap: a PROBE, never a selectable signal —
+    # computing it requires the episode's ground-truth pair, which a free
+    # controller does not have (review #3). The runtime-legitimate binding
+    # candidate is the SEARCHED max-over-pairs collision, which reaches this
+    # tournament as the "bind" key of signals/signals_pre.
     withb = [r for r in sel if r.get("binding", {}).get("overlap") is not None]
     if len(withb) >= 20:
-        never_acted = all(not r.get("expand_count") and not r.get("split_count")
-                          for r in sel)
-        bk = ("bind_overlap" if (never_acted or not use_pre)
-              else "bind_overlap_post")
-        out[bk] = auroc(
+        out["bind_overlap_probe"] = auroc(
             [r["binding"]["overlap"] for r in withb],
             [r["requires_distinction"] for r in withb])
     return out

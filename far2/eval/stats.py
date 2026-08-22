@@ -139,19 +139,29 @@ def superiority(k1: int, n1: int, k2: int, n2: int, margin: float,
 
 def non_inferiority(k1: int, n1: int, k2: int, n2: int, margin: float,
                     alpha: float = ALPHA) -> tuple[bool, str]:
-    """Gate rule: p1 is not worse than p2 by more than `margin` —
-    H0: p1 <= p2 - margin, rejected when the one-sided p of
-    (p1 - (p2 - margin)) > 0 is < alpha. Standard shifted z-test."""
+    """Gate rule: p1 is not worse than p2 by more than `margin` — passes when
+    the NEWCOMBE hybrid-score lower bound of (p1 - p2) exceeds -margin.
+
+    The previous Wald z-test was invalid at the probability boundaries
+    (review #3, P0-2): with both arms at 0% or 100% the variance collapses
+    and z explodes, so NI(0/n, 0/n) "passed" — a model that learned nothing
+    was certified not-worse than a control that learned nothing. Wilson
+    single-arm intervals never collapse, and the Newcombe combination
+    inherits that. Two arms at the SAME boundary additionally carry no
+    comparative information at all and are NOT-TESTABLE outright."""
     if n1 < N_MIN or n2 < N_MIN:
         return (False, f"NOT-TESTABLE: n1={n1}, n2={n2} < {N_MIN}")
+    if (k1 == 0 and k2 == 0) or (k1 == n1 and k2 == n2):
+        return (False, f"NOT-TESTABLE: both arms at the same boundary "
+                       f"({k1}/{n1} vs {k2}/{n2}) — no comparative "
+                       "information; NI cannot be demonstrated")
     p1, p2 = k1 / n1, k2 / n2
-    d = p1 - p2 + margin
-    se = math.sqrt(max(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2, 1e-12))
-    z = d / se
-    p = _phi_sf(z)
-    ok = p < alpha
-    return (ok, f"Δ={p1 - p2:+.1%}, NI margin {margin:.1%}, z={z:.2f}, "
-                f"p={p:.4f} (n={n1}/{n2})")
+    l1, _u1 = wilson_interval(k1, n1)
+    _l2, u2 = wilson_interval(k2, n2)
+    lower = (p1 - p2) - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)
+    ok = lower > -margin
+    return (ok, f"Δ={p1 - p2:+.1%}, Newcombe lower {lower:+.1%} vs "
+                f"-margin {-margin:.1%} (n={n1}/{n2})")
 
 
 def rate_at_least(k: int, n: int, point_min: float, ci_floor: float,

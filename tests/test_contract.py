@@ -256,20 +256,55 @@ def test_random_control_arms_are_curriculum_matched():
     assert stages_for("random_reset") == stages_for("reconsider")
 
 
-def test_blocked_eval_binding_candidate_eligibility():
-    """P4 blocked protocol: when no action ever fired, the final-state
-    binding overlap IS pre-action and must be selectable; if any action
-    fired, it must carry the ineligible _post key."""
+def test_binding_candidates_probe_vs_searched():
+    """The declared-pair overlap needs ground truth at runtime, so it may
+    only ever appear as a non-selectable _probe key; the runtime-legitimate
+    binding candidate is the SEARCHED 'bind' signal carried in signals_pre."""
     from far2.eval.metrics import signal_aurocs
-    def recs(acted):
-        return [{"requires_distinction": i % 2,
-                 "signals": {"sim": float(i)}, "signals_pre": {"sim": float(i)},
-                 "binding": {"overlap": float(i % 5)},
-                 "expand_count": 1 if (acted and i == 0) else 0,
-                 "split_count": 0}
-                for i in range(24)]
-    assert "bind_overlap" in signal_aurocs(recs(False))
-    assert "bind_overlap_post" in signal_aurocs(recs(True))
+    recs = [{"requires_distinction": i % 2,
+             "signals": {"sim": float(i), "bind": float(i % 7)},
+             "signals_pre": {"sim": float(i), "bind": float(i % 7)},
+             "binding": {"overlap": float(i % 5)},
+             "expand_count": 0, "split_count": 0}
+            for i in range(24)]
+    out = signal_aurocs(recs)
+    assert "bind" in out and "bind_overlap_probe" in out
+    assert not any(k == "bind_overlap" or k.endswith("_post") for k in out)
+
+
+def test_model_never_reads_declared_pair():
+    """Review #3 P0-1 pinned closed: perturbing batch['pair_idx'] alone —
+    tokens and targets identical — must not change logits or any collision
+    telemetry. The declared pair is evaluation/probe metadata only."""
+    m = build_model(get_preset("far2_tiny_bind"))
+    m.set_unlocked({"expand", "split"})
+    m.eval()
+    from far2.data import GENERATORS, collate
+    rng = random.Random(3)
+    batch = collate([GENERATORS["symbreak"].sample(rng, 4) for _ in range(6)])
+    pert = dict(batch)
+    pert["pair_idx"] = torch.roll(batch["pair_idx"], 1, dims=0)
+    with torch.no_grad():
+        a = m(batch, n_iters=4, collect=True)
+        b = m(pert, n_iters=4, collect=True)
+    assert torch.equal(a.logits, b.logits)
+    assert a.telemetry["C_max"] == b.telemetry["C_max"]
+    assert a.telemetry["signal_max"]["bind"] == b.telemetry["signal_max"]["bind"]
+
+
+def test_non_inferiority_boundary_safe():
+    """Review #3 P0-2: NI must never pass from zero-variance boundaries."""
+    from far2.eval.stats import non_inferiority
+    ok, d = non_inferiority(0, 320, 0, 320, margin=0.01)
+    assert not ok and "NOT-TESTABLE" in d
+    ok, d = non_inferiority(320, 320, 320, 320, margin=0.01)
+    assert not ok and "NOT-TESTABLE" in d
+    ok, _ = non_inferiority(0, 320, 40, 320, margin=0.01)
+    assert not ok, "clearly inferior arm must fail NI"
+    ok, _ = non_inferiority(300, 320, 200, 320, margin=0.03)
+    assert ok, "clearly superior arm must pass NI"
+    ok, _ = non_inferiority(320, 320, 310, 320, margin=0.02)
+    assert ok, "better arm at upper boundary must still be testable"
 
 
 def test_campaign_fingerprint_tracks_package_and_upstream(tmp_path):

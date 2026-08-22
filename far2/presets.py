@@ -129,7 +129,7 @@ def slot_recurrent_bind() -> ModelConfig:
     4,545,992 under a param-matched claim)."""
     return replace(far2_bind(), init_slots=14, n_iters_train=8,
                    disable_actions=("expand", "split", "halt", "reconsider",
-                                    "epistemic"))
+                                    "epistemic", "goal"))
 
 
 # ---- tiny variants for tests / smoke --------------------------------------
