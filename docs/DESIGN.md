@@ -25,9 +25,14 @@ is the authority on parameter counts.
 6. **Halting and reconsideration decoupled**: P5a tests RECONSIDER at fixed T=8 (the HALT
    action is masked when `halting != "learned"`), P5b adds learned halting afterward and
    reports honestly against the free convergence rule.
-7. **Epistemics are answer-level at 5M**: the supervised mechanism is the answer-level
-   4-way head. Per-slot type tags exist behind `slot_epistemic=False` (unsupervised,
-   off by default) for later scales.
+7. **Epistemics are answer-level at 5M — and OPERATIONAL** (review #3): the
+   4-way head is a decision component, not a regularizer. At inference a
+   non-DERIVED verdict ROUTES the output to the corresponding abstention
+   token (UNDERDETERMINED / NO_SOLUTION) instead of the decoded digits;
+   training keeps the auxiliary CE. P6 therefore tests the decision, and
+   the epi_shuffled control tests whether the decision (not the loss)
+   carries the effect. Per-slot type tags exist behind
+   `slot_epistemic=False` (unsupervised, off by default) for later scales.
 8. **Compute matching is explicit**: episode records carry inference FLOPs; trainers log
    cumulative training FLOPs; `run_ablations --flop-budget` produces the
    training-FLOP-matched comparison alongside the default step-matched one.
@@ -160,6 +165,12 @@ standard substrate. The substrate program (R0–R9, see ROADMAP):
    (`Collision = Overlap(B_x,B_y) × JSD(P_x,P_y)`, comparing CONCEPTS not
    slot pairs), the SPLIT source, and the directed split
    `z_new = z_src + β·Normalize(proj(h_y − h_x))`.
+   **Searched, never told** (review #3): the collision is maximized over
+   ALL variable pairs present in the tokens (`var_pos ≥ 0`); the argmax
+   pair supplies the source slot and the direction. The episode's declared
+   pair (`batch["pair_idx"]`) is evaluation/probe metadata only — a
+   contract test perturbs it and asserts bit-identical logits and
+   telemetry, so the controller can never be handed "which pair is broken".
 6. **Binding curriculum** (`bind_nll`, permutation-free soft-assignment CE):
    annealed 0.5 → 0.25 → 0 across stages; zero before any transfer claim.
 7. **R8 usage-prerequisite gates before causal claims**: UsageRate ≥ 15%,
@@ -239,10 +250,11 @@ standard substrate. The substrate program (R0–R9, see ROADMAP):
 - `slot_recurrent_5m` = `far2_5m` = 4,545,992
 - `far2_full` 4,775,763 · `far2_bind` = `far2_bind_random_expand` =
   `far2_bind_oracle` = **`slot_recurrent_bind`** = 4,980,563
-  (v0.4.2: the bind-substrate C is built FROM `far2_bind` with every operator
-  in `disable_actions` — modules exist and cost their parameters, none can
-  ever fire — so C-vs-D on the binding substrate is param-IDENTICAL, not
-  merely param-matched)
+  (v0.4.2: the bind-substrate C is built FROM `far2_bind` with every
+  mechanism in `disable_actions` — expand/split/halt/reconsider/epistemic
+  AND the goal channel ("goal" makes `_goal` return None) — modules exist
+  and cost their parameters, none is ever consulted — so C-vs-D on the
+  binding substrate is param-IDENTICAL, not merely param-matched)
 - `python -m far2.presets --table` prints the per-module ledger; the
   `PARAM_IDENTICAL_TO_*` tuples are asserted by tests.
 

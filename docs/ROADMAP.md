@@ -24,8 +24,9 @@ model is handicapped by numeric representation):
 - **C** `slot_recurrent_5m` — FAR² topology (encode once → slot workspace →
   cross-attend H → decode), **zero FAR² operators**. Param-identical to
   far2_5m; `slot_recurrent_bind` is the same role on the competitive
-  workspace, built FROM `far2_bind` with all operators in `disable_actions`
-  (param-IDENTICAL to far2_bind: 4,980,563).
+  workspace, built FROM `far2_bind` with all mechanisms in `disable_actions`
+  — operators AND the goal channel (param-IDENTICAL to far2_bind:
+  4,980,563; nothing is ever consulted).
 - **D** `far2_full` / `far2_bind` — C + adaptive representation +
   reconsideration + epistemics + protected goal (+ competitive binding
   substrate for the `_bind` variants)
@@ -75,7 +76,7 @@ Deferred until the core survives: P5a/P5b, P6, P7, the full grid, seeds.
 | P1 | `run_phase1.py` | stable soft-state recurrence, T=4 vs T=1 control, exact-residual telemetry | no divergence; state RMS bounded; T4 ≥ T1+5pts hard bucket; no collapse at T∈{6,8}. **Stop rule.** |
 | P2 | `run_phase2.py` | trained ≤ frontier (carry ≤6, expr ≤6, mul ≤3), eval BEYOND: carry {2,6,12,24}, expr {4,8,12,16}, mul {2,3,4,6}, deriv {4,8,12} at T ∈ {2,4,8,16,32} + the 32-digit L-matched counterexample (D=0 vs D=24) | OOD 2<4<8 (≥+3pts); 16 holds; length alone must not be the cost. 8>16>32 failure → contingency ladder |
 | P3a | `run_phase3a.py [--substrate bind]` | R2 oracle-necessity quartet on symbreak+linsys | fixed16 > fixed4 +5pts (**stop rule**: else the benchmark doesn't require representation); oracle-split ≥ fixed4+5pts and ≈ fixed16; binding diagnostics recorded |
-| P4 | `run_phase4.py` | signal tournament (before any free controller) on a **blocked** evaluation — expand/split do()-blocked all episode so every candidate (incl. final-state binding overlap) is pre-action state | best AUROC > 0.55; writes `runs/selected_signal.json`. **Stop rule**: on fail nothing is written and `run_phase3b` refuses to train (no silent default signal) |
+| P4 | `run_phase4.py` | signal tournament (before any free controller) on a **blocked** evaluation — expand/split do()-blocked all episode. Selectable candidates are runtime-legitimate only: the binding candidate is the **searched** max-over-pairs collision (`bind`); the declared-pair overlap is a non-selectable `_probe` diagnostic | best AUROC > 0.55; writes `runs/selected_signal.json`. **Stop rule**: on fail nothing is written and `run_phase3b` refuses to train (no silent default signal) |
 | P3b | `run_phase3b.py [--substrate bind]` | **free** controller in the quartet: fixed4 / rate-matched **random** / fixed16 / adaptive, + surface regression slots~(R,L). The random arm trains on the IDENTICAL stages/mixes/loss-weights as adaptive (only the decision source differs) and its rates are matched RAW — no floor, so zero learned usage means zero random usage | adaptive ≥ fixed16 at ≤70% slot-compute; adaptive > random +3pts on distinction queries; split P≥0.6/R≥0.5; slots track R not L; binding separation > control rate; quartet reading (R, ρ) printed |
 | P5a | `run_phase5a.py` | RECONSIDER on extraneous roots at fixed T=8: control / rate-matched random-reset / learned, + control@T12 | recovery ≥ control+5pts; ≥ random-reset+3pts; @T8 ≥ control@T12−1pt; fires 0.05–6/ep; accuracy held |
 | P5b | `run_phase5b.py` | learned HALT vs free convergence-rule control | mean iters < budget; within 2pts of the r_t<0.1 rule — if the free rule wins, we say so |

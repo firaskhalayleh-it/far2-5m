@@ -19,7 +19,12 @@ held-out transfer); every number a gate consumes comes from an exact solver.
   `z = (p̂₁ − p̂₂)/SE_pooled`, `SE_pooled = √(p̄(1−p̄)(1/n₁+1/n₂))`,
   `p = 1 − Φ(z)`.
 - **Non-inferiority** (arm 1 not worse than arm 2 by more than m):
-  H₀: `p₁ ≤ p₂ − m`; `z = (p̂₁ − p̂₂ + m)/SE_Wald`; `PASS ⇔ p < α`.
+  `PASS ⇔ Newcombe_lower(p̂₁ − p̂₂) > −m`, where the Newcombe hybrid-score
+  bound combines the arms' Wilson intervals:
+  `L = (p̂₁−p̂₂) − √((p̂₁−l₁)² + (u₂−p̂₂)²)`. The earlier Wald shifted-z was
+  invalid at probability boundaries (variance → 0 ⇒ NI(0/n, 0/n) "passed");
+  Wilson bounds never collapse. Two arms at the SAME boundary (both 0/n or
+  both n/n) carry no comparative information: **NOT-TESTABLE**.
 - **Single rate, lower-bounded**: `PASS ⇔ (p̂ ≥ point) ∧ (Wilson_lo ≥ floor)`.
 - **Single rate, upper-bounded**: `PASS ⇔ (p̂ ≤ point) ∧ (Wilson_hi ≤ ceiling)`.
 - **Known-baseline rate** (probe vs chance p₀): exact binomial,
@@ -97,10 +102,17 @@ Runs on the P3a oracle-split checkpoint BEFORE any free controller training
 (P3b consumes the winner — no circularity), with expand/split **do()-blocked
 for the entire episode**: on an oracle model the forced split IS the
 condition, so any post-action state scored against requires_distinction
-reads the effect, not the cause. Under blocking every candidate — including
-the final-state binding overlap — is pre-action state.
+reads the effect, not the cause.
 
-1. Best candidate AUROC > 0.55 (vs requires_distinction).
+Candidate legitimacy (review #3): a selectable signal must be computable by
+a FREE controller from internal state alone. The binding candidate is
+therefore the **searched** collision `max over present variable pairs of
+Overlap(B_x,B_y)·JSD(P_x,P_y)` (presence = the variable appears in the
+tokens) — the same quantity that drives the runtime controller. The
+declared-pair overlap requires the episode's ground-truth pair and appears
+only as a non-selectable `_probe` diagnostic.
+
+1. Best eligible candidate AUROC > 0.55 (vs requires_distinction).
 2. C = Sim × Div reported against its components.
 STOP RULE: a failed tournament writes NO selection, deletes any stale one,
 and `run_phase3b` refuses to train without an explicit `--signal` — a silent
@@ -230,11 +242,27 @@ significant. The transfer result is reported with seed error bars either way.
 
 `run_acceptance.py` computes every clause above from eval records on disk
 with these exact thresholds — the optional six are judged, never assumed.
-Two aggregator disciplines:
+Aggregator disciplines (hardened after review #3):
 
 - **Seed completeness is hard**: evidence covering a strict subset of
-  `--seeds` makes the claim NOT-TESTABLE (missing seeds are listed). A
-  lucky-seed subset must never masquerade as the claim.
+  `--seeds` makes the claim NOT-TESTABLE (missing seeds are listed); the
+  interventions and probes summaries are **per-seed files**
+  (`*_summary_seed<N>.json`), all required.
+- **Fewer than 2 seeds → NOT ACCEPTED unconditionally** (error bars are
+  undefined; the rule can fail on one seed but never pass).
+- **Confirm budget is hard**: each run's `config.json` steps must reach
+  `--min-steps` (default 5000) or the evidence is NOT-TESTABLE — smoke and
+  pilot runs cannot feed acceptance.
+- **Capability validation**: M3's operator-transfer clauses check the
+  evaluated checkpoint's `config.json` (adaptive_slots+binding for the
+  split claim, reconsider for the trap claim) — a zero from an absent
+  mechanism is NOT-TESTABLE, never a scored failure.
+- **P3a-necessity prerequisite**: M2 is NOT-TESTABLE unless fixed16 beats
+  fixed4 on distinction queries (m = 0.05) at confirm scale — otherwise the
+  quartet cannot separate the hypotheses.
+- **Global controls enforced**: M2 includes the binding-separation gate;
+  the P6 claim requires the shuffled-label ablation arm to be worse; the
+  P7 claim requires the scrambled-goal ablation arm to violate more.
 - NOT-TESTABLE (missing or malformed evidence) can fail the rule but never
   pass it.
 
