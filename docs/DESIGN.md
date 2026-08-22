@@ -121,8 +121,13 @@ v0.4 rebuilds the entire task layer as exact mathematics:
    base_arith (counterfactual bases — train {5,7,10}, test {6,9,11}, base
    declared in-problem), expr_eval (tree depth ⊥ token count via multi-digit
    parenthesized leaves + thin caterpillars), linsys (Fraction-exact RREF;
-   DERIVED / UNDERDETERMINED / NO_SOLUTION), symbreak (R = broken pairs = the
-   SPLIT condition; d=0 pairs are surface-matched controls), rewrite,
+   DERIVED / UNDERDETERMINED / NO_SOLUTION), symbreak v0.4.2 (8 pairs under
+   {X+Y=s, X·Y=p} + late GEQ hints; answers are roots of x²−sx+p, so no
+   linear functional of the streamed constants computes them — the v0.4.1
+   two-linear-row design collapsed to one running scalar and a contract test
+   now fits that attack directly; ALL pairs queried, inert filler rows give
+   a live L axis with corr(L,R)≈0; R = broken pairs = the SPLIT condition,
+   symmetric pairs are surface-matched controls), rewrite,
    differentiate, extraneous (sqrt trap — RECONSIDER as real mathematics),
    optimize (protected goal; infeasible-claim trap). Held-out transfer:
    sym_poly, rational_trap, iter_apply, congruence.
@@ -231,8 +236,13 @@ standard substrate. The substrate program (R0–R9, see ROADMAP):
 ## Parameter budgets (v0.4 counts; printed at startup, asserted 4.2–5.8M in tests)
 
 - `transformer_5m` 4,917,576 · `recurrent_5m` 4,561,480
-- `slot_recurrent_5m` = `far2_5m` = `slot_recurrent_bind` (14+2 slots) = 4,545,992
-- `far2_full` 4,775,763 · `far2_bind` = `far2_bind_random_expand` = `far2_bind_oracle` = 4,980,563
+- `slot_recurrent_5m` = `far2_5m` = 4,545,992
+- `far2_full` 4,775,763 · `far2_bind` = `far2_bind_random_expand` =
+  `far2_bind_oracle` = **`slot_recurrent_bind`** = 4,980,563
+  (v0.4.2: the bind-substrate C is built FROM `far2_bind` with every operator
+  in `disable_actions` — modules exist and cost their parameters, none can
+  ever fire — so C-vs-D on the binding substrate is param-IDENTICAL, not
+  merely param-matched)
 - `python -m far2.presets --table` prints the per-module ledger; the
   `PARAM_IDENTICAL_TO_*` tuples are asserted by tests.
 

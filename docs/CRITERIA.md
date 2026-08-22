@@ -91,7 +91,32 @@ oracle-SPLIT), binding substrate
 5. Binding diagnostics present (n > 0) — claim-prerequisite for SPLIT.
 Oracle arms consult ground truth at run time: upper bounds, never wins.
 
+### P4 — representation-insufficiency signal tournament (blocked evaluation)
+
+Runs on the P3a oracle-split checkpoint BEFORE any free controller training
+(P3b consumes the winner — no circularity), with expand/split **do()-blocked
+for the entire episode**: on an oracle model the forced split IS the
+condition, so any post-action state scored against requires_distinction
+reads the effect, not the cause. Under blocking every candidate — including
+the final-state binding overlap — is pre-action state.
+
+1. Best candidate AUROC > 0.55 (vs requires_distinction).
+2. C = Sim × Div reported against its components.
+STOP RULE: a failed tournament writes NO selection, deletes any stale one,
+and `run_phase3b` refuses to train without an explicit `--signal` — a silent
+substrate default would put an unvalidated detector in the headline arm.
+
 ### P3b (R7) — necessity-vs-allocation quartet (F4, RND, F16, ADP)
+
+Control-matching law (applies to every decisions-vs-noise comparison in the
+program, including P5a's random reset and the ablation random arms): the
+random arm trains on the IDENTICAL stages, mixes, fractions, and loss
+weights as the learned arm — only the decision source differs — and its
+firing rates are matched to the learned arm's MEASURED rates raw, with no
+lower clamp (zero learned usage ⇒ zero random usage). In `run_ablations`,
+random arms calibrate from the same-seed learned reference arm trained
+earlier in the same invocation (`far2_full` / `far2_bind`); a missing
+reference is a hard error, never a preset default.
 
 - Capacity gap: `Δ_cap = p̂_F16(dq) − p̂_F4(dq)`; quartet informative only if
   `Δ_cap > 0.02`.
@@ -197,11 +222,21 @@ Three claims are MANDATORY, each under the rules above at confirm stage:
 3. **Cross-domain operator transfer**: Transfer gates 1–2.
 
 Plus **≥ 2 of 6**: P5a reconsideration; P6 epistemics; P7 protected goal;
-learned halting (P5b); interventions full causal chain (R8 PASS + necessity +
-placebo per op); R4 probe separation on the binding substrate. Every
-mechanism claimed must also show: training-level ablation effect + its
-random-policy control loses + (SPLIT claims) binding separation significant.
-The transfer result is reported with seed error bars either way.
+learned halting (P5b); interventions full causal chain (R8 PASS + selective
+usage + necessity + placebo per op); R4 probe separation on the binding
+substrate. Every mechanism claimed must also show: training-level ablation
+effect + its random-policy control loses + (SPLIT claims) binding separation
+significant. The transfer result is reported with seed error bars either way.
+
+`run_acceptance.py` computes every clause above from eval records on disk
+with these exact thresholds — the optional six are judged, never assumed.
+Two aggregator disciplines:
+
+- **Seed completeness is hard**: evidence covering a strict subset of
+  `--seeds` makes the claim NOT-TESTABLE (missing seeds are listed). A
+  lucky-seed subset must never masquerade as the claim.
+- NOT-TESTABLE (missing or malformed evidence) can fail the rule but never
+  pass it.
 
 ## Multiple comparisons
 

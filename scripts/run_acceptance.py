@@ -129,23 +129,23 @@ def m1_computation(out, seeds):
     if not complete(c, grid, seeds, "phase2 depth_grid"):
         return c
     hard = lambda r: r["difficulty"] >= HARD.get(r["family"], 99)
-    # competence floor: OOD superiority on a model that never learned the
-    # tasks (5% > 2%) is meaningless — in-distribution must clear 60% first
-    ki, ni, pi = pooled(grid, lambda r: not hard(r)
-                        and r["n_iters"] == TRAIN_T)
+    # competence floor (P2 gate 1): OOD superiority on a model that never
+    # learned the tasks (5% > 2%) is meaningless — in-distribution problems
+    # are shallow, so they must clear 60% already at T=2
+    ki, ni, pi = pooled(grid, lambda r: not hard(r) and r["n_iters"] == 2)
     ok, d = rate_at_least(ki, ni, point_min=0.60, ci_floor=0.55)
-    c.check(f"in-dist competence at T={TRAIN_T} (>=60%)", ok,
-            d + f" · {seed_note(pi)}")
+    c.check("in-dist competence at T=2 (>=60%)", ok, d + f" · {seed_note(pi)}")
     for lo, hi in ((2, 4), (4, 8)):
         k1, n1, p1 = pooled(grid, lambda r, hi=hi: hard(r) and r["n_iters"] == hi)
         k0, n0, _ = pooled(grid, lambda r, lo=lo: hard(r) and r["n_iters"] == lo)
         ok, d = superiority(k1, n1, k0, n0, margin=0.03)
         c.check(f"OOD acc T={hi} > T={lo} (+3pts)", ok, d + f" · {seed_note(p1)}")
-    # stability past training depth: extra iterations must not corrupt state
-    k16, n16, _ = pooled(grid, lambda r: r["n_iters"] == 2 * TRAIN_T)
-    k8, n8, _ = pooled(grid, lambda r: r["n_iters"] == TRAIN_T)
+    # stability past training depth (P2 gate 3, hard bucket): extra
+    # iterations must not corrupt state
+    k16, n16, _ = pooled(grid, lambda r: hard(r) and r["n_iters"] == 2 * TRAIN_T)
+    k8, n8, _ = pooled(grid, lambda r: hard(r) and r["n_iters"] == TRAIN_T)
     ok, d = non_inferiority(k16, n16, k8, n8, margin=0.02)
-    c.check(f"T={2 * TRAIN_T} stable vs T={TRAIN_T} (NI 2pts)", ok, d)
+    c.check(f"OOD T={2 * TRAIN_T} holds vs T={TRAIN_T} (NI 2pts)", ok, d)
     if complete(c, match, seeds, "phase2 length_match"):
         k0, n0, _ = pooled(match, lambda r: r["difficulty"] == 0)
         k24, n24, _ = pooled(match, lambda r: r["difficulty"] == 24)
