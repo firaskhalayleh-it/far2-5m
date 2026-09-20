@@ -16,6 +16,7 @@ the tempting excluded root, abstains on modular ambiguity — where the
 slot-recurrent control cannot, it has learned reusable operations about
 cognition rather than 'linear systems require SPLIT'. See docs/ROADMAP.md."""
 
+import hashlib
 import json
 import os
 
@@ -30,6 +31,28 @@ from far2.eval.metrics import (Gate, acc_by, accuracy, assertion_counts,
 from far2.eval.stats import rate_at_most, superiority
 from far2.train import Trainer
 from far2.utils import pick_device
+
+
+def _training_families(run_dir):
+    path = os.path.join(run_dir, "config.json")
+    if not os.path.exists(path):
+        raise RuntimeError(f"transfer requires the serialized training contract: {path}")
+    with open(path) as fh:
+        cfg = json.load(fh)
+    return sorted({m["family"] for stage in cfg.get("curriculum", [])
+                   for m in stage.get("mixes", [])})
+
+
+def _state_fingerprint(model):
+    """Prove evaluation did not mutate any learned tensor."""
+    h = hashlib.sha256()
+    for name, value in sorted(model.state_dict().items()):
+        x = value.detach().cpu().contiguous()
+        h.update(name.encode())
+        h.update(str(x.dtype).encode())
+        h.update(str(tuple(x.shape)).encode())
+        h.update(x.numpy().tobytes())
+    return h.hexdigest()
 
 
 def specs(n):
@@ -64,6 +87,11 @@ def main():
                 break
     assert ckpt, "no trained FAR² checkpoint found — run ablations/phase3b first"
     model, mc = Trainer.load_model(os.path.join(ckpt, "ckpt.pt"), device)
+    trained_families = _training_families(ckpt)
+    leaked = sorted(set(trained_families) & set(TRANSFER_GENERATORS))
+    if leaked:
+        raise RuntimeError("held-out transfer families appeared in training: "
+                           + ", ".join(leaked))
     model.set_unlocked({"expand", "split", "halt", "reconsider", "epistemic"})
     # a transfer claim about an operator the checkpoint DOES NOT HAVE is not a
     # failed claim — it is NOT-TESTABLE from this checkpoint (train the
@@ -73,8 +101,12 @@ def main():
     print(f"[transfer] FAR² checkpoint: {ckpt}")
     print(f"[transfer] checkpoint operators: "
           + " · ".join(f"{k}={'on' if v else 'OFF'}" for k, v in caps.items()))
+    far2_before = _state_fingerprint(model)
     far2_recs = evaluate(model, specs(args.eval_samples), device,
                          out_path=os.path.join(ckpt, "eval", "transfer.jsonl"))
+    far2_after = _state_fingerprint(model)
+    if far2_before != far2_after:
+        raise RuntimeError("transfer evaluation mutated FAR2 parameters")
 
     ctrl_recs = None
     ctrl = args.control_ckpt
@@ -87,9 +119,17 @@ def main():
                 break
     if ctrl and os.path.exists(os.path.join(ctrl, "ckpt.pt")):
         cmodel, _ = Trainer.load_model(os.path.join(ctrl, "ckpt.pt"), device)
+        ctrl_families = _training_families(ctrl)
+        leaked_ctrl = sorted(set(ctrl_families) & set(TRANSFER_GENERATORS))
+        if leaked_ctrl:
+            raise RuntimeError("control trained on held-out transfer families: "
+                               + ", ".join(leaked_ctrl))
         print(f"[transfer] control checkpoint: {ctrl}")
+        ctrl_before = _state_fingerprint(cmodel)
         ctrl_recs = evaluate(cmodel, specs(args.eval_samples), device,
                              out_path=os.path.join(ctrl, "eval", "transfer.jsonl"))
+        if ctrl_before != _state_fingerprint(cmodel):
+            raise RuntimeError("transfer evaluation mutated control parameters")
     else:
         print("[transfer] no slot-recurrent control found — the comparison "
               "gates will report NOT-TESTABLE")
@@ -127,6 +167,15 @@ def main():
     out_path = os.path.join(args.out, "transfer_summary.json")
     with open(out_path, "w") as fh:
         json.dump({"ckpt": ckpt, "control": ctrl,
+                   "transfer_contract": {
+                       "version": "0.4.52",
+                       "evaluation_only": True,
+                       "optimizer_updates_during_transfer": 0,
+                       "parameters_unchanged": far2_before == far2_after,
+                       "training_families": trained_families,
+                       "held_out_training_overlap": leaked,
+                       "checkpoint_state_sha256": far2_before,
+                   },
                    "split_selectivity": sel, "binding": bind,
                    "recovery": rr, "recovery_control": rr_ctrl,
                    "unsupported": unsupported, "over_abstention": over,

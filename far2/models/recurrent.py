@@ -36,7 +36,8 @@ class RecurrentModel(ReasoningModel):
         self.ln_f = nn.LayerNorm(d)
         self.head = nn.Linear(d, cfg.vocab_size)
 
-    def forward(self, batch, n_iters=None, ipt=False, collect=False) -> ModelOutput:
+    def forward(self, batch, n_iters=None, ipt=False, collect=False,
+                all_cycle_logits=False) -> ModelOutput:
         cfg = self.cfg
         ids = batch["input_ids"]
         B, L = ids.shape
@@ -56,6 +57,7 @@ class RecurrentModel(ReasoningModel):
         norms, deltas = [], []
         state_sq = e.new_zeros(())
         ipt_logits = None
+        cycle_logits = []
         last_delta_sq = None
         for t in range(T):
             prev = s
@@ -71,16 +73,23 @@ class RecurrentModel(ReasoningModel):
             deltas.append(float(last_delta_sq.detach().sqrt()))
             if t + 1 == ipt_at and ipt_at != T:
                 ipt_logits = self.head(gather_ans(self.ln_f(s), batch["ans_pos"]))
+            if all_cycle_logits and t + 1 < T:
+                cycle_logits.append(
+                    self.head(gather_ans(self.ln_f(s), batch["ans_pos"])))
 
         logits = self.head(gather_ans(self.ln_f(s), batch["ans_pos"]))
         loss_terms = {"state_sq": state_sq / T, "fp_delta": last_delta_sq}
         if ipt_logits is not None:
             loss_terms["ipt_logits"] = ipt_logits
+        if cycle_logits:
+            loss_terms["cycle_logits"] = torch.stack(cycle_logits, dim=1)
         return ModelOutput(logits, loss_terms, telemetry={
             "iters_used_mean": float(T), "state_norm": norms, "state_delta": deltas})
 
-    def flops_per_sample(self, seq_len, n_iters, n_ans=1, active_slots=None):
+    def flops_per_sample(self, seq_len, n_iters, n_ans=1, active_slots=None,
+                         n_decodes=1):
         p_block = n_params(self.block)
         d = self.cfg.d_model
         per_iter = 2 * p_block * seq_len + 4 * seq_len ** 2 * d
-        return n_iters * per_iter + 2 * d * self.cfg.vocab_size * n_ans
+        return (n_iters * per_iter
+                + n_decodes * 2 * d * self.cfg.vocab_size * n_ans)

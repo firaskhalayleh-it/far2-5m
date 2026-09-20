@@ -1,6 +1,7 @@
 """The evaluation campaign as a FUNNEL — training is expensive and selective,
 evaluation is cheap and large, and only survivors earn promotion:
 
+  preflight (isolated representation laws)           stop before any training
   smoke    (scripts/smoke_test.py, run separately)   catch code failures
   pilot    ~2.5-3k steps, seed 0, large evals        does the mechanism show
                                                      ANY signal?
@@ -10,7 +11,8 @@ evaluation is cheap and large, and only survivors earn promotion:
 
 The pilot runs the killer-result chain in order, with stop rules:
 
-  P0 baselines -> P1 recurrence [STOP on fail] -> P2 depth extrapolation
+  representation preflight [STOP] -> P0 baselines -> P1 recurrence [STOP]
+  -> P2 depth extrapolation
   -> P3a oracle quartet on the binding substrate [STOP if the benchmark
      does not require representation] -> R0/R1/R4 probes
   -> P3b autonomous controller quartet -> R8 usage gates + R9 do()
@@ -91,6 +93,8 @@ def pilot_chain(seed: int, out: str, mini: bool) -> list[dict]:
     n_probe = "128" if mini else "512"
     n_interv = "120" if mini else "400"
     chain = [
+        step("representation-preflight", "representation_preflight.py",
+             stop_on_fail=True, est_min=1),
         step("P0-transformer", "run_phase0.py", "--model", "transformer",
              "--steps", "3000", "--eval-samples", "300", "--seed", s, *trn,
              est_min=18),
@@ -106,11 +110,11 @@ def pilot_chain(seed: int, out: str, mini: bool) -> list[dict]:
         step("P2-extrapolation", "run_phase2.py", "--steps", "3000",
              "--eval-samples", "250", "--seed", s, *trn, est_min=45),
         step("P3a-oracle-quartet-bind", "run_phase3a.py", "--substrate",
-             "bind", "--steps", "2500", "--eval-samples", "400", "--seed", s,
-             *trn, stop_on_fail=True, est_min=170),
+             "bind", "--steps", "4000", "--eval-samples", "400", "--seed", s,
+             *trn, stop_on_fail=True, est_min=345),
         step("R0R1R4-probes", "run_probes.py", "--strict",
              "--run", f"{out}/phase3a_oracle_split_bind_seed{seed}",
-             "--control", f"{out}/phase3a_fixed16_bind_seed{seed}",
+             "--control", f"{out}/phase3a_fixed14_bind_seed{seed}",
              "--n", n_probe, "--out", out, est_min=10),
         # P4 is a hard stop: with no validated signal there is nothing for
         # P3b to train on (and run_phase3b now refuses a silent default)
@@ -118,13 +122,13 @@ def pilot_chain(seed: int, out: str, mini: bool) -> list[dict]:
              "--run", f"{out}/phase3a_oracle_split_bind_seed{seed}",
              "--seed", s, *trn, stop_on_fail=True, est_min=6),
         step("P3b-autonomous-bind", "run_phase3b.py", "--substrate", "bind",
-             "--steps", "2500", "--eval-samples", "400", "--seed", s, *trn,
-             est_min=95,
+             "--steps", "4000", "--eval-samples", "400", "--seed", s, *trn,
+             est_min=155,
              # implicit inputs P3b consumes without naming them in argv:
              # the P4 selection and the phase3a controls it reuses
              deps=[f"{out}/selected_signal.json",
-                   f"{out}/phase3a_fixed16_bind_seed{seed}/ckpt.pt",
-                   f"{out}/phase3a_fixed4_bind_seed{seed}/ckpt.pt"]),
+                   f"{out}/phase3a_fixed14_bind_seed{seed}/ckpt.pt",
+                   f"{out}/phase3a_fixed8_bind_seed{seed}/ckpt.pt"]),
         step("R8R9-interventions", "run_interventions.py",
              "--run", f"{out}/phase3b_adaptive_bind_seed{seed}",
              "--ops", "split", "expand", "--n", n_interv, "--difficulty", "4",

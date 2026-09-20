@@ -105,6 +105,13 @@ class SymBreakGenerator(TaskGenerator):
             requires_distinction=int(condition),
             meta={"D": 2, "R": R, "L": len(tokens),
                   "pair": (f"X{2 * probe_pair}", f"X{2 * probe_pair + 1}"),
+                  # Oracle-only upper-bound targets.  Free controllers never
+                  # read this metadata; they must discover the same pairs from
+                  # rendered relations and internal state.  Keeping every
+                  # broken pair is essential: one episode can require up to
+                  # six independent SPLIT actions, not merely one binary fire.
+                  "split_pairs": [(f"X{2 * i}", f"X{2 * i + 1}")
+                                  for i in sorted(broken)],
                   "vars": {f"X{2 * i + s}": vals[i][s]
                            for i in range(N_PAIRS) for s in (0, 1)}})
 

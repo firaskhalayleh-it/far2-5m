@@ -1,7 +1,7 @@
 """Causal-control machinery (v0.3) + binding substrate (v0.4): random/oracle
 controller policies, do() interventions, reset-at-random, disabled actions,
 goal scrambling, shuffled epistemic labels, parameter parity of the control
-presets, competitive binding, registers, and the R0/R1 probes. These are the
+presets, explicit binding, registers, and the R0/R1 probes. These are the
 mechanisms that make a FAR² win hard to explain away."""
 
 import random
@@ -56,19 +56,16 @@ def test_random_policy_zero_rate_is_inert():
     assert all(a == 2 for a in tel["active_slots"])
 
 
-def test_oracle_policy_splits_exactly_on_the_condition():
+def test_oracle_policy_splits_every_broken_pair():
     m = build_model(adaptive_tiny(repr_policy="oracle"))
     m.set_unlocked({"expand", "split"})
     m.eval()
     batch = symbreak_batch()
     with torch.no_grad():
         tel = m(batch, n_iters=6, collect=True).telemetry
-    req = batch["requires_distinction"].tolist()
-    for i, r in enumerate(req):
-        if r == 1:
-            assert tel["split_count"][i] == 1.0
-        else:
-            assert tel["split_count"][i] == 0.0
+    demand = batch["oracle_split_count"].tolist()
+    for i, r in enumerate(demand):
+        assert tel["split_count"][i] == float(r)
 
 
 def test_oracle_action_expand_variant():
@@ -79,8 +76,8 @@ def test_oracle_action_expand_variant():
     with torch.no_grad():
         tel = m(batch, n_iters=6, collect=True).telemetry
     assert sum(tel["split_count"]) == 0
-    req = batch["requires_distinction"].tolist()
-    for i, r in enumerate(req):
+    demand = batch["oracle_split_count"].tolist()
+    for i, r in enumerate(demand):
         assert tel["expand_count"][i] == float(r)
 
 
@@ -153,6 +150,8 @@ def test_goal_scrambled_is_a_batch_roll_with_identical_params():
     base = replace(get_preset("far2_tiny"), protected_goal=True)
     plain, scr = build_model(base), build_model(replace(base, goal_scrambled=True))
     scr.load_state_dict(plain.state_dict())
+    plain.set_unlocked({"goal"})
+    scr.set_unlocked({"goal"})
     assert plain.param_count() == scr.param_count()
     rng = random.Random(0)
     batch = collate([GENERATORS["optimize"].sample(rng, 3) for _ in range(4)])

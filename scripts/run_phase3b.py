@@ -2,16 +2,16 @@
 the Phase 4 tournament selected, embedded in the necessity-vs-allocation
 quartet on mathematical symmetry breaking:
 
-    fixed4     capacity floor            (4 slots forever)
+    fixed8     semantic capacity floor   (one concept slot per pair)
     random     rate-matched RANDOM expansion/splitting, random split source
-    fixed16    capacity ceiling          (16 slots forever)
+    fixed14    capacity ceiling          (8 base + max R=6 concept slots)
     adaptive   the learned controller
 
 Reading the quartet (pre-registered):
-  · random closes most of the fixed16-fixed4 gap  -> the win is capacity/noise
-  · adaptive ~ fixed16 at <=70% slot-compute while random ~ fixed4
+  · random closes most of the fixed14-fixed8 gap  -> the win is capacity/noise
+  · adaptive ~ fixed14 at <=70% slot-compute while random ~ fixed8
                                                   -> intelligent allocation
-  · adaptive > fixed16 while random ~ fixed4      -> restructuring beyond
+  · adaptive > fixed14 while random ~ fixed8      -> restructuring beyond
                                                      capacity (the big claim)
 Plus the surface gate: ACTIVE SLOTS must track representation demand R
 (broken pairs), not surface length L. The random arm's rates are matched to
@@ -28,9 +28,10 @@ from far2.eval.metrics import (Gate, accuracy, binding_separation,
                                correct_counts, mean, split_selectivity,
                                surface_slopes)
 from far2.eval.stats import non_inferiority, rate_at_least, superiority
-from far2.train import Stage
+from far2.train import Curriculum, Stage
 from far2.utils.logging import read_jsonl
-from run_phase3a import base_mc, eval_specs, mix, stages_for
+from run_phase3a import (CEILING_CONCEPT_SLOTS, FLOOR_CONCEPT_SLOTS, base_mc,
+                         eval_specs, mix, stages_for)
 
 
 def free_stages(substrate: str):
@@ -38,14 +39,14 @@ def free_stages(substrate: str):
     # final stage has oracle_weight=0 and bind_weight=0 (asserted by tests)
     bw = 0.5 if substrate == "bind" else 0.0
     return [
-        Stage("warmup", 0.3, mix(), unlocked={"expand"}, depth="random",
+        Stage("warmup", 0.3, mix(), unlocked={"expand"}, depth="fixed",
               ipt_alpha=0.5, oracle_weight=1.0, bind_weight=bw,
               entropy_bonus=0.01, tau=1.0),
-        Stage("free", 0.4, mix(), unlocked={"expand", "split"}, depth="random",
+        Stage("free", 0.4, mix(), unlocked={"expand", "split"}, depth="fixed",
               ipt_alpha=0.5, oracle_weight=0.3, bind_weight=bw / 2,
               slot_cost=0.01, entropy_bonus=0.01, tau=0.7),
         Stage("autonomous", 0.3, mix(), unlocked={"expand", "split"},
-              depth="random", ipt_alpha=0.5, oracle_weight=0.0,
+              depth="fixed", ipt_alpha=0.5, oracle_weight=0.0,
               bind_weight=0.0, slot_cost=0.01, entropy_bonus=0.005, tau=0.6),
     ]
 
@@ -61,30 +62,48 @@ def random_stages(substrate: str):
 
 
 def control_records(args, arm, base, tagged):
+    mc = replace(base, init_slots=(CEILING_CONCEPT_SLOTS
+                                   if arm == "fixed14"
+                                   else FLOOR_CONCEPT_SLOTS))
     path = os.path.join(args.out, f"phase3a_{arm}{tagged}_seed{args.seed}",
                         "eval", "phase3a.jsonl")
-    if os.path.exists(path):
-        print(f"[phase3b] reusing {arm} control from {path}")
-        return read_jsonl(path)
-    mc = replace(base, init_slots=(16 - base.n_registers if arm == "fixed16"
-                                   else 4))
+    cfg_path = os.path.join(os.path.dirname(os.path.dirname(path)), "config.json")
+    if os.path.exists(path) and os.path.exists(cfg_path):
+        with open(cfg_path) as fh:
+            saved = json.load(fh)
+        expected_curriculum = Curriculum(
+            stages_for(arm, args.substrate), args.steps).to_dict()
+        train_cfg = saved.get("train", {})
+        compatible = (
+            saved.get("model") == mc.to_dict()
+            and saved.get("curriculum") == expected_curriculum
+            and train_cfg.get("steps") == args.steps
+            and train_cfg.get("batch_size") == args.batch
+            and train_cfg.get("seed") == args.seed)
+        records = read_jsonl(path) if compatible else []
+        compatible = compatible and len(records) == 6 * args.eval_samples
+        if compatible:
+            print(f"[phase3b] reusing contract-matched {arm} control from {path}")
+            return records
+        print(f"[phase3b] refusing stale/incompatible {arm} control at {path}; "
+              "retraining under the current contract")
     tc = make_tc(args, f"phase3b_{arm}{tagged}_seed{args.seed}", ipt_alpha=0.5)
     t = train(mc, tc, stages_for(arm, args.substrate))
     return run_eval(t, eval_specs(args.eval_samples), "phase3b")
 
 
-def interpret(acc4, accR, acc16, accA, scA, sc16) -> str:
-    gap = acc16 - acc4
+def interpret(acc8, accR, acc14, accA, scA, sc14) -> str:
+    gap = acc14 - acc8
     if gap <= 0.02:
-        return ("capacity barely matters on this eval (fixed16-fixed4 gap "
+        return ("capacity barely matters on this eval (fixed14-fixed8 gap "
                 f"{gap:+.1%}) — the quartet cannot separate the hypotheses")
-    r_frac = (accR - acc4) / gap
-    if accA >= acc16 + 0.03 and r_frac <= 0.4:
-        return ("RESTRUCTURING BEYOND CAPACITY: adaptive beats even fixed16 "
+    r_frac = (accR - acc8) / gap
+    if accA >= acc14 + 0.03 and r_frac <= 0.4:
+        return ("RESTRUCTURING BEYOND CAPACITY: adaptive beats even fixed14 "
                 "while random stays near the floor")
-    if accA >= acc16 - 0.01 and scA <= 0.70 * sc16 and r_frac <= 0.4:
+    if accA >= acc14 - 0.01 and scA <= 0.70 * sc14 and r_frac <= 0.4:
         return ("INTELLIGENT ALLOCATION: adaptive matches full capacity at "
-                f"{scA / sc16:.0%} of its slot-compute while random expansion "
+                f"{scA / sc14:.0%} of its slot-compute while random expansion "
                 "does not — the decisions carry the value")
     if r_frac >= 0.6:
         return (f"CAPACITY/NOISE STORY: random expansion closes {r_frac:.0%} "
@@ -130,7 +149,8 @@ def main():
                              "first or pass --signal explicitly.")
     print(f"[phase3b] substrate={args.substrate} · controller signal: {signal}")
 
-    mc = replace(base, adaptive_slots=True, init_slots=4,
+    mc = replace(base, adaptive_slots=True,
+                 init_slots=FLOOR_CONCEPT_SLOTS,
                  collision_signal=signal)
     tc = make_tc(args, f"phase3b_adaptive{tagged}_seed{args.seed}", ipt_alpha=0.5)
     trainer = train(mc, tc, free_stages(args.substrate))
@@ -152,13 +172,13 @@ def main():
     t_rand = train(mc_rand, tc_rand, random_stages(args.substrate))
     recs["random"] = run_eval(t_rand, eval_specs(args.eval_samples), "phase3b")
 
-    recs["fixed16"] = control_records(args, "fixed16", base, tagged)
-    recs["fixed4"] = control_records(args, "fixed4", base, tagged)
+    recs["fixed14"] = control_records(args, "fixed14", base, tagged)
+    recs["fixed8"] = control_records(args, "fixed8", base, tagged)
 
     def slot_compute(rs):
         return mean(rs, "active_slots") * mean(rs, "iters_used")
 
-    order = ["fixed4", "random", "fixed16", "adaptive"]
+    order = ["fixed8", "random", "fixed14", "adaptive"]
     kn = {a: correct_counts(r, family="symbreak") for a, r in recs.items()}
     div = {a: accuracy(r, family="symbreak", requires_distinction=1)
            for a, r in recs.items()}
@@ -176,24 +196,24 @@ def main():
     for a in order:
         print(f"  {a:<9} {kn[a][0] / max(kn[a][1], 1):>8.1%} {div[a]:>16.1%} "
               f"{sc[a]:>11.1f}")
-    cap_gap = div["fixed16"] - div["fixed4"]
-    R = (div["random"] - div["fixed4"]) / cap_gap if cap_gap > 0 else float("nan")
-    rho = sc["adaptive"] / sc["fixed16"] if sc["fixed16"] else float("nan")
-    print(f"  indices: capacity gap Δ16−4 = {cap_gap:+.1%} · random-closure "
+    cap_gap = div["fixed14"] - div["fixed8"]
+    R = (div["random"] - div["fixed8"]) / cap_gap if cap_gap > 0 else float("nan")
+    rho = sc["adaptive"] / sc["fixed14"] if sc["fixed14"] else float("nan")
+    print(f"  indices: capacity gap Δ14−8 = {cap_gap:+.1%} · random-closure "
           f"R = {R:.2f} · compute ratio ρ = {rho:.2f}")
     print(f"  reading: "
-          f"{interpret(div['fixed4'], div['random'], div['fixed16'], div['adaptive'], sc['adaptive'], sc['fixed16'])}")
+          f"{interpret(div['fixed8'], div['random'], div['fixed14'], div['adaptive'], sc['adaptive'], sc['fixed14'])}")
     if ss.get("testable"):
         print(f"  surface: slots ~ {ss['beta1']:+.2f}·R {ss['beta2']:+.2f}·L "
               f"(z_R={ss['z1']:.2f} p={ss['p1_pos']:.4f}; "
               f"z_L={ss['z2']:.2f} p={ss['p2_pos']:.4f})")
 
     gate = Gate("Phase 3b · dynamic representation (free controller)")
-    ok, d = non_inferiority(*kn["adaptive"], *kn["fixed16"], margin=0.01)
-    gate.check("adaptive not worse than fixed16 on symbreak (NI 1pt)", ok, d)
-    gate.check("adaptive uses <= 70% of fixed16 slot-compute (rho <= 0.70)",
+    ok, d = non_inferiority(*kn["adaptive"], *kn["fixed14"], margin=0.01)
+    gate.check("adaptive not worse than fixed14 on symbreak (NI 1pt)", ok, d)
+    gate.check("adaptive uses <= 70% of fixed14 slot-compute (rho <= 0.70)",
                rho <= 0.70, f"rho = {rho:.2f} "
-               f"({sc['adaptive']:.1f} vs {sc['fixed16']:.1f} slot·iters)")
+               f"({sc['adaptive']:.1f} vs {sc['fixed14']:.1f} slot·iters)")
     ok, d = superiority(*kn_div["adaptive"], *kn_div["random"], margin=0.03)
     gate.check("adaptive > rate-matched RANDOM policy (distinction queries)",
                ok, d + " — else the win is injected capacity/noise")
@@ -219,7 +239,7 @@ def main():
     print("\n  next: run_interventions.py --run "
           f"{tc.out_dir}  (usage gates, then episode-level do())\n"
           "        run_probes.py --run "
-          f"{tc.out_dir} --control runs/phase3a_fixed16{tagged}_seed{args.seed}")
+          f"{tc.out_dir} --control runs/phase3a_fixed14{tagged}_seed{args.seed}")
     finish(gate.report())
 
 

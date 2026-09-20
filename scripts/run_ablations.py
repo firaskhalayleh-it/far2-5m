@@ -50,7 +50,7 @@ ABLATION_PRESETS = [
     "far2_no_epistemic", "far2_epi_shuffled",
     # goal: protection vs extra clean channel
     "far2_no_goal", "far2_goal_scrambled",
-    # binding substrate (R5+): competitive binding vs its own controls
+    # binding substrate (R5+): explicit concept binding vs its own controls
     "far2_bind", "far2_bind_random_expand", "far2_bind_oracle",
     "slot_recurrent_bind",
 ]
@@ -90,6 +90,8 @@ def capabilities(mc) -> set[str]:
         caps.add("reconsider")
     if mc.epistemic:
         caps.add("epistemic")
+    if mc.protected_goal:
+        caps.add("goal")
     return caps - disabled
 
 
@@ -121,7 +123,9 @@ def eval_grid(n: int, include_transfer: bool = False) -> list[EvalSpec]:
 
 def flop_matched_steps(mc, batch: int, budget: float) -> int:
     model = build_model(mc)
-    per_step = 3 * batch * model.flops_per_sample(TYPICAL_LEN, mc.n_iters_train)
+    n_decodes = mc.n_iters_train if mc.kind != "transformer" else 1
+    per_step = 3 * batch * model.flops_per_sample(
+        TYPICAL_LEN, mc.n_iters_train, n_decodes=n_decodes)
     return max(200, int(budget / per_step))
 
 

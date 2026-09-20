@@ -17,6 +17,7 @@ roadmap claims". Each test pins one review blocker closed:
 import os
 import random
 import sys
+from dataclasses import replace
 
 import torch
 
@@ -249,9 +250,21 @@ def test_random_control_arms_are_curriculum_matched():
     """The decisions-vs-noise comparisons are only valid when the ONLY
     difference between the arms is the decision source: identical stages,
     mixes, fractions, and loss weights."""
+    from run_phase3a import base_mc
     from run_phase3b import free_stages, random_stages
     for substrate in ("standard", "bind"):
         assert random_stages(substrate) == free_stages(substrate)
+        base = base_mc(substrate)
+        configs = (
+            replace(base, init_slots=8),
+            replace(base, init_slots=14),
+            replace(base, init_slots=8, repr_policy="oracle",
+                    oracle_action="expand"),
+            replace(base, init_slots=8, repr_policy="oracle",
+                    oracle_action="split"),
+        )
+        assert len({build_model(c).param_count() for c in configs}) == 1, \
+            "the P3 quartet must be parameter-identical"
     from run_phase5a import stages_for
     assert stages_for("random_reset") == stages_for("reconsider")
 

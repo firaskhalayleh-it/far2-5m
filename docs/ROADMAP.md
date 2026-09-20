@@ -1,4 +1,4 @@
-# FAR²-5M Roadmap — phases & gates (v0.4, exact-mathematics revision)
+# FAR²-5M Roadmap — phases & gates (v0.4.52 capability revision)
 
 > **Prove the cognition mechanism works before proving language capability —
 > on exact mathematics, where every answer has a ground truth and every
@@ -23,12 +23,12 @@ model is handicapped by numeric representation):
 - **B** `recurrent_5m` — whole sequence × T, shared block
 - **C** `slot_recurrent_5m` — FAR² topology (encode once → slot workspace →
   cross-attend H → decode), **zero FAR² operators**. Param-identical to
-  far2_5m; `slot_recurrent_bind` is the same role on the competitive
+  far2_5m; `slot_recurrent_bind` is the same role on the explicit-binding
   workspace, built FROM `far2_bind` with all mechanisms in `disable_actions`
   — operators AND the goal channel (param-IDENTICAL to far2_bind:
-  4,980,563; nothing is ever consulted).
+  5,765,853; nothing is ever consulted).
 - **D** `far2_full` / `far2_bind` — C + adaptive representation +
-  reconsideration + epistemics + protected goal (+ competitive binding
+  reconsideration + epistemics + protected goal (+ explicit concept binding
   substrate for the `_bind` variants)
 
 **D − C is the FAR² contribution.** Without C, any win could be credited to the
@@ -41,13 +41,15 @@ promotion (`scripts/run_campaign.py`):
 
 | Stage | Budget | Purpose |
 |---|---|---|
-| Smoke | 200–500 steps (`smoke_test.py`, `run_campaign.py --mini`) | catch code/training failures — every script end-to-end |
+| Smoke | 600 steps (`smoke_test.py`) or 150–300 (`run_campaign.py --mini`) | standalone: core retention with optional mechanisms neutral; mini campaign: every mechanism/script end-to-end; exact learning must beat a modal baseline |
 | Pilot | ~2.5–3k steps, seed 0, evals 300–500 | does the mechanism show ANY signal? |
 | Confirm | 5–10k steps, evals in the thousands | establish the result — survivors only |
 | Seeds | 3–5 seeds | statistical confidence — important survivors only |
 | Grid | the ~17-arm ablation matrix | causal proof — only after core gates pass |
 
-The pilot runs the killer-result chain in order, with stop rules:
+v0.4.52 adds a real-task qualification before the pilot: F0 capability
+[STOP].  Only a surviving foundation enters the existing campaign, which runs
+the killer-result chain in order:
 P0 baselines → P1 recurrence [STOP] → P2 depth extrapolation → P3a oracle
 quartet on the binding substrate [STOP if the benchmark does not require
 representation] → R0/R1/R4 probes → P3b autonomous controller quartet →
@@ -59,12 +61,12 @@ Deferred until the core survives: P5a/P5b, P6, P7, the full grid, seeds.
 | R | What it establishes | Where |
 |---|---|---|
 | R0 | the probe pipeline recovers PLANTED encodings (>95%) and scores chance on shuffled labels — the instrument works | `run_probes.py` (runs first, refuses to report otherwise) |
-| R1 | WHERE pair values actually live: bound slot / wrong slot / pooled Z / encoder H (+ nonlinear) → Case A distributed / B bottleneck / C upstream / D nonlinear | `run_probes.py` |
-| R2 | whether extra representation is even NECESSARY: fixed4 / fixed16 / oracle-EXPAND / oracle-SPLIT — if fixed4 ≈ fixed16 the benchmark is the problem; **stop** | `run_phase3a.py` |
+| R1 | WHERE pair values actually live: bound slot / wrong slot / pooled Z / contextual entity E / legacy H-first-occurrence (+ nonlinear) → Case A distributed / B bottleneck / C upstream / D nonlinear | `run_probes.py` |
+| R2 | whether extra representation is even NECESSARY: fixed8 / fixed14 / oracle-EXPAND / oracle-SPLIT — comparisons are NOT-READY until fixed14 is competent; if fixed8 ≈ fixed14 afterward, the benchmark is the problem; **stop** | `run_phase3a.py` |
 | R3/R8 | natural operator demand BEFORE causal claims: UsageRate ≥ 15%, FalseUsage ≤ 5% — else USAGE-FAILURE, a finding, not a missing test | `run_interventions.py` |
 | R4 | strict binding gates: bound ≥ chance+20pts, bound−wrong ≥ 15pts (McNemar) | `run_probes.py --strict` |
-| R5 | the competitive-binding substrate itself: evidence tokens choose their owner slot; 2 register slots absorb background; binding matrix B[e,s] drives collision detection and directed SPLIT | `far2_bind` presets |
-| R6 | binding curriculum (annealed 0.5 → 0.25 → 0; zero before transfer claims) | curriculum stages |
+| R5 | contextual entity encoder E pools all occurrences and reads immutable H; standard content attention remains; 2 registers cannot own variables; input-derived entity incompatibility detects demand while B[e,s] overlap localizes directed SPLIT | `far2_bind` presets |
+| R6 | entity + binding curriculum (annealed 0.5 → 0.25 → 0; zero before transfer claims) | curriculum stages |
 | R7 | the FREE controller in the necessity-vs-allocation quartet | `run_phase3b.py` |
 | R9 | episode-level do(): block/force operators in exact replays | `run_interventions.py` |
 
@@ -72,12 +74,13 @@ Deferred until the core survives: P5a/P5b, P6, P7, the full grid, seeds.
 
 | Phase | Script | Experiment | Gate (pre-registered defaults) |
 |---|---|---|---|
+| F0 | `run_foundation_curve.py` | v0.4.52 first real-task curve: staged easy→rules→P3 pressure; answer-only fixed14 candidate; learned-seed/all-cycle diagnostics; 5.7M Transformer and parameter-identical slot-recurrent control; paired Z0/T1/T4/T8; fresh-ID R≤4 separated from OOD R=6 | fresh-ID exact ≥20% and token ≥75%; T8 exceeds Z0 and T1 by ≥5pts; smoke budgets cannot pass. **Stop rule.** |
 | P0 | `run_phase0.py --model {transformer,recurrent,slot_recurrent}` | baselines A, B, C on M0–M9 | each ≥95% easy bucket; params 4.2–5.8M; FLOPs logged |
 | P1 | `run_phase1.py` | stable soft-state recurrence, T=4 vs T=1 control, exact-residual telemetry | no divergence; state RMS bounded; T4 ≥ T1+5pts hard bucket; no collapse at T∈{6,8}. **Stop rule.** |
 | P2 | `run_phase2.py` | trained ≤ frontier (carry ≤6, expr ≤6, mul ≤3), eval BEYOND: carry {2,6,12,24}, expr {4,8,12,16}, mul {2,3,4,6}, deriv {4,8,12} at T ∈ {2,4,8,16,32} + the 32-digit L-matched counterexample (D=0 vs D=24) | OOD 2<4<8 (≥+3pts); 16 holds; length alone must not be the cost. 8>16>32 failure → contingency ladder |
-| P3a | `run_phase3a.py [--substrate bind]` | R2 oracle-necessity quartet on symbreak+linsys | fixed16 > fixed4 +5pts (**stop rule**: else the benchmark doesn't require representation); oracle-split ≥ fixed4+5pts and ≈ fixed16; binding diagnostics recorded |
-| P4 | `run_phase4.py` | signal tournament (before any free controller) on a **blocked** evaluation — expand/split do()-blocked all episode. Selectable candidates are runtime-legitimate only: the binding candidate is the **searched** max-over-pairs collision (`bind`); the declared-pair overlap is a non-selectable `_probe` diagnostic | best AUROC > 0.55; writes `runs/selected_signal.json`. **Stop rule**: on fail nothing is written and `run_phase3b` refuses to train (no silent default signal) |
-| P3b | `run_phase3b.py [--substrate bind]` | **free** controller in the quartet: fixed4 / rate-matched **random** / fixed16 / adaptive, + surface regression slots~(R,L). The random arm trains on the IDENTICAL stages/mixes/loss-weights as adaptive (only the decision source differs) and its rates are matched RAW — no floor, so zero learned usage means zero random usage | adaptive ≥ fixed16 at ≤70% slot-compute; adaptive > random +3pts on distinction queries; split P≥0.6/R≥0.5; slots track R not L; binding separation > control rate; quartet reading (R, ρ) printed |
+| P3a | `run_phase3a.py [--substrate bind]` | parameter-identical R2 oracle-necessity quartet on symbreak+linsys; fixed14 and a separately reported Transformer reference first receive the same task/step/batch/seed/eval contract; failure stops before the other three arms; eight base concept slots; oracle services all R broken pairs at fixed T=8 | report Transformer-vs-fixed14 exact/token/inference-FLOPs; fresh-ID R≤4 readiness: fixed14 exact ≥20% and token ≥75%, with OOD R=6 separate; then fixed14 > fixed8 +5pts; oracle-split ≥ fixed8+5pts and ≈ fixed14; binding diagnostics recorded |
+| P4 | `run_phase4.py` | signal tournament (before any free controller) on a **blocked** evaluation — expand/split do()-blocked all episode. Selectable binding candidates are input-derived `entity_relation` (demand), `binding_overlap`, and `bind` (their product for localization); declared-pair overlap is a non-selectable `_probe` diagnostic | best AUROC > 0.55; writes `runs/selected_signal.json`. **Stop rule**: on fail nothing is written and `run_phase3b` refuses to train (no silent default signal) |
+| P3b | `run_phase3b.py [--substrate bind]` | **free** controller in the quartet: fixed8 / rate-matched **random** / fixed14 / adaptive, + surface regression slots~(R,L). The random arm trains on the IDENTICAL stages/mixes/loss-weights as adaptive (only the decision source differs) and its rates are matched RAW — no floor, so zero learned usage means zero random usage | adaptive ≥ fixed14 at ≤70% slot-compute; adaptive > random +3pts on distinction queries; split P≥0.6/R≥0.5; slots track R not L; binding separation > control rate; quartet reading (R, ρ) printed |
 | P5a | `run_phase5a.py` | RECONSIDER on extraneous roots at fixed T=8: control / rate-matched random-reset / learned, + control@T12 | recovery ≥ control+5pts; ≥ random-reset+3pts; @T8 ≥ control@T12−1pt; fires 0.05–6/ep; accuracy held |
 | P5b | `run_phase5b.py` | learned HALT vs free convergence-rule control | mean iters < budget; within 2pts of the r_t<0.1 rule — if the free rule wins, we say so |
 | P6 | `run_phase6.py` | epistemic state on linsys: DERIVED / UNDERDETERMINED / NO_SOLUTION | unsupported ≤10% AND over-abstention ≤10%; answerable acc −≤2pts |
@@ -120,7 +123,7 @@ explanation for why it won.** Each control removes one:
 |---|---|
 | Latent-bottleneck topology, not FAR² operators | `slot_recurrent_5m` / `slot_recurrent_bind` (baseline C, param-matched) |
 | Better numeric tokenization, not cognition | shared digit-sequence vocab + Abacus significance embedding in ALL four models |
-| More capacity, not adaptive representation | fixed4 / fixed16 endpoints + ≤70% slot-compute gate |
+| More capacity, not adaptive representation | fixed8 / fixed14 endpoints + ≤70% slot-compute gate |
 | Extra slots/noise injection, not decisions | `far2_random_expand` / `far2_bind_random_expand` — rate-matched random policy, random split source |
 | Adaptation couldn't help even with perfect decisions | `far2_oracle_expand` / `far2_bind_oracle` — condition-forced upper bound (never a "win") |
 | Longer context = harder, so length explains depth | D ⊥ L by construction: exact carry chains at fixed digit count; multi-digit-leaf expression trees; the 32-digit L-matched counterexample |
@@ -151,11 +154,15 @@ explanation for why it won.** Each control removes one:
 
 ## 5M acceptance gate (v0.4)
 
+**Foundation prerequisite**: every declared seed has a v0.4.52 F0 PASS at the
+confirm budget.  Missing, smoke-scale, pooled-ID/OOD, or flat Z0/T1/T8 evidence
+cannot feed acceptance.
+
 **Three mandatory claims** (confirm stage, rules in `docs/CRITERIA.md`):
 1. computation adaptation — iterations buy OOD mathematical depth, and the
    L-matched counterexample shows length alone is not the cost;
 2. representation adaptation — adaptive beats rate-matched random and tracks
-   R (not L) at ≤70% of fixed16 slot-compute;
+   R (not L) at ≤70% of fixed14 slot-compute;
 3. cross-domain operator transfer — unseen-family splits track the condition
    and trap recovery beats slot-recurrent C.
 

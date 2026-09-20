@@ -34,6 +34,10 @@ class ModelConfig:
     max_slots: int = 16
     init_slots: int = 4
     slot_jitter: float = 0.02         # per-forward noise on seeds at activation
+    workspace_init: str = "learned"   # learned | input | input_shuffled
+                                      # input reuses the core cross-attention to
+                                      # warm active slots from H before cycle 1;
+                                      # shuffled is the causal content control
     goal_dim: int = 64
 
     # far2: mechanisms (the ablation flags)
@@ -56,7 +60,9 @@ class ModelConfig:
                                       #   SPLIT sources, excluded from
                                       #   collision pair search
     binding: bool = False             # variable->slot binding matrix
-                                      #   B[e,s] = softmax_s(h_e^T W_B z_s):
+                                      #   B[e,s] = softmax_s(E_e^T W_B z_s):
+                                      #   E pools all entity occurrences and
+                                      #   reads their relational context from H
                                       #   enables collision_signal="bind",
                                       #   binding-directed SPLIT, the binding
                                       #   curriculum loss, and ownership-based
@@ -70,11 +76,16 @@ class ModelConfig:
     core_act: str = "relu"            # recurrent-core MLP activation (Lipschitz-friendly)
 
     # far2: operator details
+    split_impl: str = "legacy_clone"  # legacy_clone | semantic
+                                      # semantic requires binding and creates
+                                      # two exclusive entity-owned children
     split_beta: float = 0.2           # clone noise scale x d_nearest
     reconsider_alpha: float = 0.3     # Z <- a*Z + (1-a)*seeds on RECONSIDER
     controller_hidden: int = 128
     converge_tol: float = 0.1         # halting=="converge": stop when ||dZ||inf/||Z||inf < tol
-    collision_signal: str = "C"       # which monitor signal drives the controller:
+    collision_signal: str = "C"       # controller signal: C/sim/jsd/attn_iou/
+                                      #   bind/entity_relation/binding_overlap
+                                      #   (P4-selected)
                                       # C | sim | jsd | attn_iou | attn_iou_x_jsd
                                       # (Phase 4 tournament selects; P3b consumes)
     slot_epistemic: bool = False      # per-slot type tags are NOT supervised at 5M;
@@ -113,13 +124,17 @@ class TrainConfig:
     eval_every: int = 0               # 0 = only at the end
     eval_samples: int = 200
     out_dir: str = "runs/run"
+    checkpoint_steps: tuple = ()      # optional 1-based learning-curve points
 
     # depth sampling
     depth: str = "fixed"              # fixed | random | heavy  (heavy = contingency ladder rung 1)
     depth_choices: tuple = (2, 3, 4, 5, 6, 8)
 
     # loss weights (0 disables a term; see blueprint Part VI ledger)
-    ipt_alpha: float = 0.0            # (1-a)*CE(final) + a*CE(random intermediate)
+    ipt_alpha: float = 0.0            # intermediate-loss blend weight
+    cycle_supervision: str = "all"    # all | random (legacy IPT) | final
+                                      # all supervises every pre-final cycle;
+                                      # final disables intermediate losses
     state_norm_penalty: float = 0.01
     fp_penalty: float = 0.0           # contingency: ||Z_T - Z_{T-1}||^2
     epistemic_weight: float = 0.5

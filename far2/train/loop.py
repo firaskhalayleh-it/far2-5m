@@ -91,8 +91,13 @@ class Trainer:
         self.log = JsonlLogger(os.path.join(train_cfg.out_dir, "train_log.jsonl"))
         self.depth_rng = random.Random(train_cfg.seed + 1)
         self.train_flops = 0.0            # cumulative training-compute estimate
+        self.optimizer_updates = 0
+        self.unique_examples = 0
+        self.forward_cycles = 0
+        self.intermediate_supervised_states = 0
         with open(os.path.join(train_cfg.out_dir, "config.json"), "w") as fh:
             json.dump({"model": model_cfg.to_dict(), "train": train_cfg.to_dict(),
+                       "curriculum": self.curriculum.to_dict(),
                        "params": model.param_count()}, fh, indent=2)
 
     # ---- depth sampling ------------------------------------------------
@@ -116,7 +121,15 @@ class Trainer:
                                    ignore_index=-100)
         parts = {"ce": float(ce_final.detach())}
         alpha = stage.ipt_alpha or tc.ipt_alpha
-        if "ipt_logits" in lt and alpha > 0:
+        if "cycle_logits" in lt and alpha > 0:
+            cycle = lt["cycle_logits"]
+            ce_cycle = F.cross_entropy(
+                cycle.reshape(-1, V),
+                targets[:, None, :].expand(-1, cycle.shape[1], -1).reshape(-1),
+                ignore_index=-100)
+            loss = (1 - alpha) * ce_final + alpha * ce_cycle
+            parts["ce_cycle"] = float(ce_cycle.detach())
+        elif "ipt_logits" in lt and alpha > 0:
             ce_ipt = F.cross_entropy(lt["ipt_logits"].reshape(-1, V),
                                      targets.reshape(-1), ignore_index=-100)
             loss = (1 - alpha) * ce_final + alpha * ce_ipt
@@ -134,7 +147,9 @@ class Trainer:
         add("fp_delta", tc.fp_penalty, lt.get("fp_delta"))
         add("slot_cost", stage.slot_cost or tc.slot_cost, lt.get("slot_cost"))
         add("iter_cost", stage.iter_cost or tc.iter_cost, lt.get("iter_cost"))
-        add("bind_nll", stage.bind_weight or tc.bind_weight, lt.get("bind_nll"))
+        bind_w = stage.bind_weight or tc.bind_weight
+        add("bind_nll", bind_w, lt.get("bind_nll"))
+        add("entity_nll", bind_w, lt.get("entity_nll"))
         ent_w = stage.entropy_bonus or tc.entropy_bonus
         if ent_w and lt.get("ctrl_entropy") is not None and lt["ctrl_entropy"].requires_grad:
             loss = loss - ent_w * lt["ctrl_entropy"]
@@ -195,20 +210,39 @@ class Trainer:
             batch = collate(self.sampler.batch(tc.batch_size), self.device,
                             sig_offset=self.sampler.sig_offset())
             T = self.sample_depth(stage)
+            use_intermediate = (stage.ipt_alpha or tc.ipt_alpha) > 0
+            mode = tc.cycle_supervision
+            if mode not in ("random", "all", "final"):
+                raise ValueError(f"unknown cycle_supervision={mode!r}")
+            n_decodes = (T if use_intermediate and mode == "all"
+                         and self.mc.kind != "transformer" else 1)
             # forward+backward ≈ 3x forward — same convention for every model,
             # so FLOP-matched comparisons (blueprint Part VI) have a denominator
             self.train_flops += 3 * tc.batch_size * self.model.flops_per_sample(
-                batch["input_ids"].shape[1], T, n_ans=batch["target_ids"].shape[1])
-            out = self.model(batch, n_iters=T,
-                             ipt=(stage.ipt_alpha or tc.ipt_alpha) > 0)
+                batch["input_ids"].shape[1], T,
+                n_ans=batch["target_ids"].shape[1], n_decodes=n_decodes)
+            self.unique_examples += tc.batch_size
+            self.forward_cycles += tc.batch_size * (T if self.mc.kind != "transformer"
+                                                     else self.mc.n_layers)
+            self.intermediate_supervised_states += tc.batch_size * max(n_decodes - 1, 0)
+            out = self.model(
+                batch, n_iters=T,
+                ipt=use_intermediate and mode == "random",
+                all_cycle_logits=use_intermediate and mode == "all")
             loss, parts = self.compute_loss(out, batch, stage)
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), tc.grad_clip)
             self.opt.step()
+            self.optimizer_updates += 1
             self.sched.step()
             if self.ema:
                 self.ema.update(self.model)
+
+            update = step + 1
+            if update in set(tc.checkpoint_steps):
+                self.save_checkpoint(os.path.join(
+                    tc.out_dir, f"ckpt_step{update}.pt"))
 
             if step % tc.log_every == 0 or step == tc.steps - 1:
                 rec = {"step": step, "stage": stage.name, "T": T,
@@ -236,14 +270,34 @@ class Trainer:
 
     def save(self):
         path = os.path.join(self.tc.out_dir, "ckpt.pt")
-        torch.save({"model": self.model.state_dict(),
-                    "ema": self.ema.shadow if self.ema else None,
-                    "model_cfg": self.mc.to_dict(),
-                    "train_cfg": self.tc.to_dict()}, path)
+        self.save_checkpoint(path)
         with open(os.path.join(self.tc.out_dir, "summary.json"), "w") as fh:
             json.dump({"params": self.model.param_count(),
                        "train_flops": self.train_flops,
-                       "steps": self.tc.steps}, fh, indent=2)
+                       "steps": self.tc.steps,
+                       "optimizer_updates": self.optimizer_updates,
+                       "unique_examples": self.unique_examples,
+                       "forward_cycles": self.forward_cycles,
+                       "intermediate_supervised_states":
+                           self.intermediate_supervised_states,
+                       "intermediate_loss_weight": self.tc.ipt_alpha,
+                       "cycle_supervision": self.tc.cycle_supervision},
+                      fh, indent=2)
+
+    def save_checkpoint(self, path: str):
+        """Save weights plus exact compute counters at a learning-curve point."""
+        torch.save({"model": self.model.state_dict(),
+                    "ema": self.ema.shadow if self.ema else None,
+                    "model_cfg": self.mc.to_dict(),
+                    "train_cfg": self.tc.to_dict(),
+                    "train_state": {
+                        "train_flops": self.train_flops,
+                        "optimizer_updates": self.optimizer_updates,
+                        "unique_examples": self.unique_examples,
+                        "forward_cycles": self.forward_cycles,
+                        "intermediate_supervised_states":
+                            self.intermediate_supervised_states,
+                    }}, path)
 
     @staticmethod
     def load_model(path: str, device=None):
@@ -251,8 +305,28 @@ class Trainer:
         ckpt = torch.load(path, map_location=device or "cpu", weights_only=False)
         cfg = ModelConfig(**ckpt["model_cfg"])
         model = build_model(cfg)
-        model.load_state_dict(ckpt["ema"] if ckpt.get("ema") else ckpt["model"],
-                              strict=False)
+        weights = ckpt["ema"] if ckpt.get("ema") else ckpt["model"]
+        missing, unexpected = model.load_state_dict(weights, strict=False)
+        # v0.4.4 changed the binding substrate itself.  `strict=False` is
+        # retained for benign historical buffers, but a legacy bind checkpoint
+        # must never masquerade as compatible while its entity detector is
+        # freshly random.  Those runs must be retrained.
+        critical = [k for k in missing
+                    if ((cfg.kind == "far2" and k.startswith("out_pos"))
+                        or (cfg.binding and (k.startswith("entity_")
+                                             or k.startswith("bind_W")
+                                             or k.startswith("split_dir_proj"))))]
+        if critical:
+            raise RuntimeError(
+                "legacy FAR2 checkpoint is incompatible with the workspace-only "
+                "query/contextual-entity substrate; retrain this arm (missing: "
+                + ", ".join(critical[:4]) + ("..." if len(critical) > 4 else "")
+                + ")")
+        if unexpected:
+            # Unexpected learned tensors indicate a different architecture,
+            # not a safe forward-compatible buffer difference.
+            raise RuntimeError("checkpoint contains unexpected model tensors: "
+                               + ", ".join(unexpected[:4]))
         if device is not None:
             model.to(device)
         return model, cfg

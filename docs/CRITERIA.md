@@ -53,6 +53,41 @@ feed the acceptance gate. Training is selective; evaluation is large
 (synthetic generation is free — decisive evals use thousands of episodes at
 confirm stage).
 
+## v0.4.52 capability contract — trainable, generalizing, transferable
+
+High smoke accuracy is never a capability result.  The first real-task gate
+is `scripts/run_foundation_curve.py`, and it keeps four estimands separate:
+
+1. **Fresh-ID generalization:** evaluation episodes use a seed disjoint from
+   the generated training stream and stay inside the declared training
+   frontier.  For symbreak this is R ∈ {1,2,4}; R=6 is OOD and MUST NOT be
+   pooled into foundation readiness.  Fixed14 at T=8 requires exact ≥ 0.20
+   and target-token accuracy ≥ 0.75 on the fresh-ID cells.
+2. **Computation after initialization:** the same EMA checkpoint is read at
+   Z0/T1/T4/T8 on paired episodes.  A foundation capability pass requires
+   both `p̂_T8 ≥ p̂_Z0 + 0.05` and `p̂_T8 ≥ p̂_T1 + 0.05`; a high but flat
+   curve is initialization/one-pass competence, not recurrent reasoning.
+3. **Practical trainability:** the selected arm is input-warm, final-answer
+   only, with oracle_weight=bind_weight=0 and no operator unlock.  Learned-seed
+   and all-cycle supervision are named diagnostic arms.  The 5.7M Transformer
+   and parameter-identical slot-recurrent-bind control are mandatory.  Steps,
+   unique examples, supervised states, and training FLOPs to first readiness
+   are reported; fewer than 4,000 steps or 400 fresh evaluations per cell is
+   NOT-TESTABLE and can never pass this pilot capability gate.
+4. **Generalization roles are not interchangeable:** fresh-ID competence is
+   the foundation gate; Phase 2 owns depth/length extrapolation; the frozen
+   transfer phase owns unseen-grammar operator reuse.  Passing one never
+   substitutes for another.
+5. **Zero-update transfer:** transfer evaluation performs no optimizer steps,
+   fingerprints parameters before and after evaluation, and rejects any
+   checkpoint whose serialized curriculum contains a held-out family.  No
+   family-specific fine-tuning, oracle/binding labels, or parameter update may
+   occur between the trained checkpoint and the transfer records.
+
+These are capability laws, not optimization promises.  v0.4.52 may still
+return NOT-READY; the revision prevents a toy task, an answer-laden Z0, an OOD
+mixture, or per-family retraining from being mistaken for a stronger model.
+
 ## Phase gates as inequalities
 
 Notation: `p̂_X(S)` = accuracy of arm X on episode set S; `dq` = distinction
@@ -84,17 +119,33 @@ STOP RULE: if this gate fails, nothing downstream is built.
 Failure signal (not a gate): `p̂(T=8) − p̂(T=32) > 0.10` triggers the
 pre-registered remedy ladder (heavy-tail T, fp_penalty, JSRR, convex gate).
 
-### P3a (R2) — oracle-necessity quartet (fixed4 / fixed16 / oracle-EXPAND /
+### P3a (R2) — oracle-necessity quartet (fixed8 / fixed14 / oracle-EXPAND /
 oracle-SPLIT), binding substrate
 
-1. The benchmark REQUIRES representation: superiority fixed16 vs fixed4 on
+0. **Competence prerequisite:** fixed14 is trained and evaluated in isolation
+   alongside a separately reported Transformer reference using the identical
+   task mixture, step budget, batch, seed, and evaluation cells. Exact,
+   target-token accuracy, and inference FLOPs are reported for both. The
+   Transformer is diagnostic, not a fifth quartet arm. Fixed14 must reach
+   exact >= 0.20 and target-token accuracy >= 0.75 on fresh-ID symbreak
+   R ∈ {1,2,4}. R=6 is reported separately as OOD and never pooled into this
+   prerequisite. Below this is NOT-READY:
+   arm comparisons are blocked because exact-match is at an uninformative
+   boundary. Token accuracy is diagnostic only; exact remains the endpoint.
+1. The benchmark REQUIRES representation: superiority fixed14 vs fixed8 on
    dq, m = 0.05. STOP RULE: if this fails, a controller is CORRECT never to
    split — fix the benchmark before training one.
-2. Superiority oracle-SPLIT vs fixed4 on dq, m = 0.05.
-3. Non-inferiority oracle-SPLIT vs fixed16 on dq, m = 0.02.
+2. Superiority oracle-SPLIT vs fixed8 on dq, m = 0.05.
+3. Non-inferiority oracle-SPLIT vs fixed14 on dq, m = 0.02.
 4. oracle-SPLIT vs oracle-EXPAND contrast reported (targeting vs capacity).
-5. Binding diagnostics present (n > 0) — claim-prerequisite for SPLIT.
+5. Oracle dosage is exact: split_count = R on distinction episodes and zero
+   on controls; fixed T=8 permits all R <= 6 actions.
+6. Binding diagnostics present (n > 0) — claim-prerequisite for SPLIT.
 Oracle arms consult ground truth at run time: upper bounds, never wins.
+All four arms instantiate the same full mechanism substrate; fixed arms keep
+it locked. Parameter identity and shared initialization are required, and P3b
+may reuse a P3a control only when model, curriculum, train budget, seed, batch,
+and eval cardinality match the current contract.
 
 ### P4 — representation-insufficiency signal tournament (blocked evaluation)
 
@@ -105,12 +156,15 @@ condition, so any post-action state scored against requires_distinction
 reads the effect, not the cause.
 
 Candidate legitimacy (review #3): a selectable signal must be computable by
-a FREE controller from internal state alone. The binding candidate is
-therefore the **searched** collision `max over present variable pairs of
-Overlap(B_x,B_y)·JSD(P_x,P_y)` (presence = the variable appears in the
-tokens) — the same quantity that drives the runtime controller. The
-declared-pair overlap requires the episode's ground-truth pair and appears
-only as a non-selectable `_probe` diagnostic.
+a FREE controller from rendered input plus internal state alone. Candidate
+relations are derived from variables co-occurring in SEP-delimited input
+clauses; neither the declared pair nor `requires_distinction` is read. The
+two-stage binding law exposes both runtime-legitimate candidates:
+`entity_relation = max JSD(P(E_x),P(E_y))` detects representation demand,
+while `bind = max Overlap(B_x,B_y)·JSD(P(E_x),P(E_y))` adds workspace collision
+for localization; `binding_overlap` exposes the overlap factor independently.
+Declared-pair overlap requires ground-truth pair metadata and appears only as
+a non-selectable `_probe` diagnostic.
 
 1. Best eligible candidate AUROC > 0.55 (vs requires_distinction).
 2. C = Sim × Div reported against its components.
@@ -118,7 +172,7 @@ STOP RULE: a failed tournament writes NO selection, deletes any stale one,
 and `run_phase3b` refuses to train without an explicit `--signal` — a silent
 substrate default would put an unvalidated detector in the headline arm.
 
-### P3b (R7) — necessity-vs-allocation quartet (F4, RND, F16, ADP)
+### P3b (R7) — necessity-vs-allocation quartet (F8, RND, F14, ADP)
 
 Control-matching law (applies to every decisions-vs-noise comparison in the
 program, including P5a's random reset and the ablation random arms): the
@@ -130,13 +184,13 @@ random arms calibrate from the same-seed learned reference arm trained
 earlier in the same invocation (`far2_full` / `far2_bind`); a missing
 reference is a hard error, never a preset default.
 
-- Capacity gap: `Δ_cap = p̂_F16(dq) − p̂_F4(dq)`; quartet informative only if
+- Capacity gap: `Δ_cap = p̂_F14(dq) − p̂_F8(dq)`; quartet informative only if
   `Δ_cap > 0.02`.
-- Random-closure index: `R = (p̂_RND(dq) − p̂_F4(dq)) / Δ_cap` (RND is
+- Random-closure index: `R = (p̂_RND(dq) − p̂_F8(dq)) / Δ_cap` (RND is
   rate-matched to ADP's measured firing rates, split source random).
-- Compute ratio: `ρ = (slots·iters)_ADP / (slots·iters)_F16`.
+- Compute ratio: `ρ = (slots·iters)_ADP / (slots·iters)_F14`.
 - Gates:
-  1. Non-inferiority ADP vs F16 on symbreak, m = 0.01.
+  1. Non-inferiority ADP vs F14 on symbreak, m = 0.01.
   2. `ρ ≤ 0.70`.
   3. Superiority ADP vs RND on dq, m = 0.03.
   4. Split precision `tp/n_did`: point ≥ 0.60, CI floor 0.50.
@@ -144,10 +198,11 @@ reference is a hard error, never a preset default.
   6. Mean active slots ∈ [3.5, 15.5] (no collapse).
   7. Surface: active_slots on (R, L) — `p_R < α` and (`p_L ≥ α` or
      `β_L ≤ 0.5·β_R`). "More equations → more slots" would load on L.
-  8. Binding separation after split > separation on control queries (m = 0).
+  8. Binding separation after split > separation on control queries (m = 0);
+     a variable owned by a background register is never counted as separated.
 - Pre-registered reading (printed with R and ρ):
-  `R ≥ 0.6` → capacity/noise; `NI(ADP,F16) ∧ ρ ≤ 0.7 ∧ R ≤ 0.4` → allocation;
-  `p̂_ADP − p̂_F16 ≥ 0.03 ∧ R ≤ 0.4` → restructuring beyond capacity.
+  `R ≥ 0.6` → capacity/noise; `NI(ADP,F14) ∧ ρ ≤ 0.7 ∧ R ≤ 0.4` → allocation;
+  `p̂_ADP − p̂_F14 ≥ 0.03 ∧ R ≤ 0.4` → restructuring beyond capacity.
 
 ### P5a — reconsideration on extraneous roots (CTL, RST(random), REC; CTL@T12)
 
@@ -199,10 +254,12 @@ recovered > 95% AND shuffled-label accuracy < p₀ + 0.15 — else the
 instrument is broken and nothing about the model is reported.
 
 **R1 location probes** on identical paired rows (episode-level train/test
-split): bound slot (linear + MLP), wrong slot, pooled Z, encoder H at the
-variable anchor. Diagnosis is the pattern: Case A (H, pooled high; slots ~
-chance) = distributed; Case B (H high, pooled low) = bottleneck; Case C
-(H low) = upstream; Case D (linear low, MLP high) = present, not linear.
+split): bound slot (linear + MLP), wrong slot, pooled Z, contextual entity E,
+and legacy encoder H at the variable's first occurrence. Diagnosis uses E when
+available: Case A (E, pooled high; slots ~ chance) = distributed; Case B
+(E high, pooled low) = bottleneck; Case C (E low) = upstream; Case D (linear
+low, MLP high) = present, not linear. H-first-occurrence is diagnostic context,
+not the strict encoder verdict.
 
 **Baseline gates** (standard substrate): bound vs p₀ exact binomial
 m = 0.10; separation `(p̂_bound − p̂_wrong ≥ 0.10) ∧ (McNemar p < α)`.
@@ -225,6 +282,11 @@ SPLIT claims must be reported as capacity allocation, not concept separation.
 
 ### Acceptance gate (5M, v0.4)
 
+**Foundation prerequisite (v0.4.52):** every declared seed supplies a complete
+F0 summary at the confirm budget with `capability_verdict=PASS`. Missing seeds,
+smoke budgets, a non-v0.4.52 contract, or flat Z0/T1/T8 evidence makes the
+entire acceptance NOT-ACCEPTED regardless of downstream scores.
+
 Three claims are MANDATORY, each under the rules above at confirm stage:
 
 1. **Computation adaptation**: P2 gates 1–3 (iterations buy OOD depth) plus
@@ -244,6 +306,10 @@ significant. The transfer result is reported with seed error bars either way.
 with these exact thresholds — the optional six are judged, never assumed.
 Aggregator disciplines (hardened after review #3):
 
+- **Transformer evidence is mandatory:** M2 is NOT-TESTABLE when the matched
+  P3a Transformer reference is missing. Adaptive-vs-Transformer exact accuracy
+  and inference-FLOP ratio are reported directly; this is a required baseline
+  report, not an unregistered mechanism-pass criterion.
 - **Seed completeness is hard**: evidence covering a strict subset of
   `--seeds` makes the claim NOT-TESTABLE (missing seeds are listed); the
   interventions and probes summaries are **per-seed files**
@@ -257,8 +323,8 @@ Aggregator disciplines (hardened after review #3):
   evaluated checkpoint's `config.json` (adaptive_slots+binding for the
   split claim, reconsider for the trap claim) — a zero from an absent
   mechanism is NOT-TESTABLE, never a scored failure.
-- **P3a-necessity prerequisite**: M2 is NOT-TESTABLE unless fixed16 beats
-  fixed4 on distinction queries (m = 0.05) at confirm scale — otherwise the
+- **P3a-necessity prerequisite**: M2 is NOT-TESTABLE unless fixed14 beats
+  fixed8 on distinction queries (m = 0.05) at confirm scale — otherwise the
   quartet cannot separate the hypotheses.
 - **Global controls enforced**: M2 includes the binding-separation gate;
   the P6 claim requires the shuffled-label ablation arm to be worse; the

@@ -24,7 +24,8 @@ class TransformerModel(ReasoningModel):
         self.ln_f = nn.LayerNorm(d)
         self.head = nn.Linear(d, cfg.vocab_size)
 
-    def forward(self, batch, n_iters=None, ipt=False, collect=False) -> ModelOutput:
+    def forward(self, batch, n_iters=None, ipt=False, collect=False,
+                all_cycle_logits=False) -> ModelOutput:
         ids = batch["input_ids"]
         B, L = ids.shape
         x = self.tok(ids) + self.pos(torch.arange(L, device=ids.device))[None]
@@ -36,7 +37,8 @@ class TransformerModel(ReasoningModel):
         logits = self.head(gather_ans(self.ln_f(x), batch["ans_pos"]))
         return ModelOutput(logits, telemetry={"iters_used_mean": float(self.cfg.n_layers)})
 
-    def flops_per_sample(self, seq_len, n_iters=None, n_ans=1, active_slots=None):
+    def flops_per_sample(self, seq_len, n_iters=None, n_ans=1, active_slots=None,
+                         n_decodes=1):
         p_block = n_params(self.blocks[0])
         d = self.cfg.d_model
         per_block = 2 * p_block * seq_len + 4 * seq_len ** 2 * d

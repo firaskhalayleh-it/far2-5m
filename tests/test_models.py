@@ -10,7 +10,8 @@ from far2.data import GENERATORS, collate
 from far2.models import build_model
 from far2.presets import get_preset
 
-FIVE_M = ["transformer_5m", "recurrent_5m", "slot_recurrent_5m", "far2_5m",
+FIVE_M = ["transformer_5m", "transformer_bind_match", "recurrent_5m",
+          "slot_recurrent_5m", "far2_5m",
           "far2_full", "far2_fixed4", "far2_random_expand", "far2_oracle_expand",
           "far2_no_split", "far2_random_reset", "far2_goal_scrambled",
           "far2_no_goal",
@@ -59,7 +60,8 @@ def test_n_iters_changes_compute():
 
 def test_far2_full_gradient_coverage():
     m = build_model(get_preset("far2_tiny_full"))
-    m.set_unlocked({"expand", "split", "halt", "reconsider", "epistemic"})
+    m.set_unlocked({"expand", "split", "halt", "reconsider", "epistemic",
+                    "goal"})
     m.train()
     out = m(make_batch(), n_iters=4, ipt=True)
     loss = out.logits.float().pow(2).mean()
@@ -83,6 +85,7 @@ def test_inactive_slots_frozen():
 def test_goal_read_but_not_written():
     from dataclasses import replace
     m = build_model(replace(get_preset("far2_tiny"), protected_goal=True))
+    m.set_unlocked({"goal"})
     m.train()
     out = m(make_batch(families=("optimize",), n=4), n_iters=3)
     out.logits.pow(2).mean().backward()

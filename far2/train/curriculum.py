@@ -6,8 +6,9 @@ frontier (carry depth <= 6, expression depth <= 6, operand digits <= 3, bases
 distribution. Earlier families keep replay mass so nothing is forgotten.
 Phase scripts use single-stage curricula; run_ablations uses FULL_CURRICULUM.
 
-bind_weight anneals the BINDING CURRICULUM (soft variable->slot supervision):
-on while operators are being taught, zero before transfer claims."""
+bind_weight anneals the ENTITY + BINDING CURRICULUM (entity value readout and
+soft variable->slot supervision): on while operators are being taught, zero
+before transfer claims."""
 
 from dataclasses import dataclass, field, replace
 
@@ -28,7 +29,7 @@ class Stage:
     depth: str = "fixed"              # fixed | random | heavy
     ipt_alpha: float = 0.0
     oracle_weight: float = 0.0
-    bind_weight: float = 0.0          # binding-curriculum CE (anneal to 0)
+    bind_weight: float = 0.0          # entity/binding curriculum (anneal to 0)
     slot_cost: float = 0.0
     iter_cost: float = 0.0
     entropy_bonus: float = 0.0
@@ -74,7 +75,8 @@ FULL_CURRICULUM: list[Stage] = [
     Stage("F_goal", 0.05,
           core_mixes(0.3) + [fam("symbreak", 0.5), fam("extraneous", 0.5),
                              fam("linsys", 0.5), fam("optimize", 1.5)],
-          unlocked={"expand", "split", "halt", "reconsider", "epistemic"},
+          unlocked={"expand", "split", "halt", "reconsider", "epistemic",
+                    "goal"},
           depth="random", ipt_alpha=0.5, slot_cost=0.01, iter_cost=0.01,
           tau=0.5),
 ]
@@ -94,6 +96,37 @@ class Curriculum:
             if step < bound:
                 return stage
         return self.bounds[-1][1]
+
+    def to_dict(self) -> list[dict]:
+        """Serializable, exact stage contract saved beside every checkpoint.
+
+        TrainConfig alone omits stage-level loss weights and operator unlocks;
+        without this ledger two behaviorally different runs can appear to have
+        the same configuration.
+        """
+        rows, start = [], 0
+        for end, stage in self.bounds:
+            rows.append({
+                "name": stage.name,
+                "start_step": start,
+                "end_step": end,
+                "fraction": stage.frac,
+                "mixes": [{"family": m.family, "weight": m.weight,
+                            "dmin": m.dmin, "dmax": m.dmax,
+                            "choices": list(m.choices) if m.choices else None}
+                           for m in stage.mixes],
+                "unlocked": sorted(stage.unlocked),
+                "depth": stage.depth,
+                "ipt_alpha": stage.ipt_alpha,
+                "oracle_weight": stage.oracle_weight,
+                "bind_weight": stage.bind_weight,
+                "slot_cost": stage.slot_cost,
+                "iter_cost": stage.iter_cost,
+                "entropy_bonus": stage.entropy_bonus,
+                "tau": stage.tau,
+            })
+            start = end
+        return rows
 
 
 def single_stage(mixes: list[Mix], **overrides) -> list[Stage]:

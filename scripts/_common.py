@@ -36,10 +36,14 @@ def apply_mini(args) -> None:
 
 
 def make_tc(args, name: str, **overrides) -> TrainConfig:
+    # A 0.999 EMA retains 77.9% of random initialization after 250 updates and
+    # makes mini checkpoints look untrained.  Keep the confirm-scale default,
+    # but use a shorter-memory EMA for genuinely short diagnostic runs.
+    ema = 0.99 if args.steps < 1000 else 0.999
     tc = TrainConfig(steps=args.steps, batch_size=args.batch, device=args.device,
                      seed=args.seed, out_dir=os.path.join(args.out, name),
                      warmup=max(50, args.steps // 15),
-                     eval_samples=args.eval_samples)
+                     eval_samples=args.eval_samples, ema=ema)
     return replace(tc, **overrides)
 
 

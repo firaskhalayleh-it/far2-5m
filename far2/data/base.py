@@ -2,10 +2,10 @@
 into the tensor contract every model consumes (blueprint Part II).
 
 v0.4: numbers are digit runs, so collate also emits `digit_sig` (the shared
-Abacus-style significance index every model embeds) and, when a family
-declares variables, `var_pos`/`var_values` — the anchor positions and ground-
-truth values that power the binding matrix, the binding curriculum loss, and
-the representation probes."""
+Abacus-style significance index every model embeds) and syntax-derived
+`var_pos`/`var_occurrence`/`var_rel` tensors. Ground-truth `var_values` are a
+training-only binding-curriculum label; runtime structure is derived solely
+from the rendered token sequence."""
 
 import random
 from abc import ABC, abstractmethod
@@ -106,6 +106,8 @@ def collate(samples: list[Sample], device: torch.device | None = None,
     pad_mask = torch.zeros((B, L), dtype=torch.bool)
     goal_mask = torch.zeros((B, L), dtype=torch.bool)
     ans_pos = torch.full((B, A), -1, dtype=torch.long)
+    answer_query_ids = torch.full((B, A), ans, dtype=torch.long)
+    answer_query_vars = torch.full((B, A), -1, dtype=torch.long)
     target_ids = torch.full((B, A), -100, dtype=torch.long)
     family_id = torch.zeros(B, dtype=torch.long)
     difficulty = torch.zeros(B, dtype=torch.long)
@@ -113,8 +115,13 @@ def collate(samples: list[Sample], device: torch.device | None = None,
     requires_distinction = torch.full((B,), -1, dtype=torch.long)
     reconsider_label = torch.full((B,), -1, dtype=torch.long)
     var_pos = torch.full((B, N_VARS), -1, dtype=torch.long)
+    var_occurrence = torch.zeros((B, N_VARS, L), dtype=torch.bool)
+    var_rel = torch.zeros((B, N_VARS, N_VARS), dtype=torch.bool)
     var_values = torch.full((B, N_VARS), -100, dtype=torch.long)
     pair_idx = torch.full((B, 2), -1, dtype=torch.long)
+    oracle_split_pairs = torch.full((B, N_VARS // 2, 2), -1,
+                                    dtype=torch.long)
+    oracle_split_count = torch.zeros(B, dtype=torch.long)
 
     for b, s in enumerate(samples):
         ids = v.encode(s.tokens)
@@ -126,21 +133,66 @@ def collate(samples: list[Sample], device: torch.device | None = None,
         positions = [i for i, t in enumerate(ids) if t == ans]
         ans_pos[b, : len(positions)] = torch.tensor(positions)
         target_ids[b, : len(s.targets)] = torch.tensor(v.encode(s.targets))
+        # FAR2 output queries are syntax-only: answer rank plus, when the
+        # grammar provides one query token per answer, that token's identity.
+        # They never reuse contextual encoder states at ANS positions, so the
+        # final answer must read the recurrent workspace.
+        if "Q" in s.tokens:
+            q0 = s.tokens.index("Q") + 1
+            a0 = s.tokens.index("ANS")
+            query_tokens = s.tokens[q0:a0]
+            if len(query_tokens) == len(s.targets):
+                answer_query_ids[b, : len(query_tokens)] = torch.tensor(
+                    v.encode(query_tokens))
+                for ai, tok in enumerate(query_tokens):
+                    if tok.startswith("X") and tok[1:].isdigit():
+                        answer_query_vars[b, ai] = int(tok[1:])
         family_id[b] = FAMILY_ORDER.index(s.family)   # token is shuffled; name isn't
         difficulty[b] = s.difficulty
         epistemic[b] = s.epistemic
         requires_distinction[b] = s.requires_distinction
         reconsider_label[b] = s.reconsider_label
-        # variable anchors: first occurrence position + ground-truth value
+        # Runtime-legitimate variable structure comes from rendered tokens,
+        # never from meta.vars or the declared evaluation pair.
+        for i, tok in enumerate(s.tokens):
+            if tok.startswith("X") and tok[1:].isdigit():
+                vi = int(tok[1:])
+                if 0 <= vi < N_VARS:
+                    var_occurrence[b, vi, i] = True
+                    if var_pos[b, vi] < 0:
+                        var_pos[b, vi] = i
+
+        # Relation edges are all variable pairs co-occurring in an input
+        # clause (SEP-delimited, before Q). This is observable syntax, not the
+        # probe's declared pair or requires_distinction label.
+        qpos = s.tokens.index("Q") if "Q" in s.tokens else len(s.tokens)
+        clause: set[int] = set()
+        for tok in s.tokens[:qpos] + ["SEP"]:
+            if tok == "SEP":
+                for vi in clause:
+                    for vj in clause:
+                        if vi != vj:
+                            var_rel[b, vi, vj] = True
+                clause = set()
+            elif tok.startswith("X") and tok[1:].isdigit():
+                vi = int(tok[1:])
+                if 0 <= vi < N_VARS:
+                    clause.add(vi)
+
+        # Ground-truth values supervise the annealed entity/binding curriculum
+        # only. They are not consulted by the model's runtime decisions.
         for name, val in s.meta.get("vars", {}).items():
             vi = int(name[1:])
-            var_pos[b, vi] = next(
-                (i for i, t in enumerate(s.tokens) if t == name), -1)
             if 0 <= val <= 9:
                 var_values[b, vi] = v.t(f"D{val}")
         if "pair" in s.meta:
             pair_idx[b, 0] = int(s.meta["pair"][0][1:])
             pair_idx[b, 1] = int(s.meta["pair"][1][1:])
+        split_pairs = s.meta.get("split_pairs", ())
+        oracle_split_count[b] = min(len(split_pairs), N_VARS // 2)
+        for pi, pair in enumerate(split_pairs[: N_VARS // 2]):
+            oracle_split_pairs[b, pi, 0] = int(pair[0][1:])
+            oracle_split_pairs[b, pi, 1] = int(pair[1][1:])
         # goal span: GOAL ... up to (excluding) Q — pooled by the protected-goal head
         if "GOAL" in s.tokens:
             g0 = s.tokens.index("GOAL")
@@ -150,11 +202,15 @@ def collate(samples: list[Sample], device: torch.device | None = None,
     batch = {
         "input_ids": input_ids, "digit_sig": digit_sig,
         "pad_mask": pad_mask, "goal_mask": goal_mask,
-        "ans_pos": ans_pos, "target_ids": target_ids,
+        "ans_pos": ans_pos, "answer_query_ids": answer_query_ids,
+        "answer_query_vars": answer_query_vars, "target_ids": target_ids,
         "family_id": family_id, "difficulty": difficulty,
         "epistemic_label": epistemic, "requires_distinction": requires_distinction,
         "reconsider_label": reconsider_label,
-        "var_pos": var_pos, "var_values": var_values, "pair_idx": pair_idx,
+        "var_pos": var_pos, "var_occurrence": var_occurrence,
+        "var_rel": var_rel, "var_values": var_values, "pair_idx": pair_idx,
+        "oracle_split_pairs": oracle_split_pairs,
+        "oracle_split_count": oracle_split_count,
         "samples": samples,                      # kept for scoring; not a tensor
     }
     if device is not None:

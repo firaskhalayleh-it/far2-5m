@@ -35,7 +35,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from far2.config import INCONSISTENT, UNDERDET, ModelConfig
-from far2.models.base import ModelOutput, ReasoningModel, gather_ans
+from far2.data.vocab import N_VARS, VOCAB
+from far2.models.base import ModelOutput, ReasoningModel
 from far2.models.layers import (MASK_FILL, MHA, MLP, Block, attn_entropy,
                                 n_params, sig_embedding)
 from far2.models.monitor import collision_signals
@@ -110,24 +111,14 @@ class FAR2Model(ReasoningModel):
             Block(d, cfg.n_heads, cfg.mlp_mult) for _ in range(cfg.n_encoder_layers))
         self.enc_ln = nn.LayerNorm(d)
 
-        # binding substrate (v0.4): variable->slot ownership matrix and the
-        # learned direction for binding-directed SPLIT
-        if cfg.binding:
-            self.bind_W = nn.Linear(d, d, bias=False)
-            self.split_dir_proj = nn.Linear(d, d, bias=False)
-
-        # ② goal pool + inject (read-only by construction: nothing writes g)
-        if cfg.protected_goal:
-            self.goal_query = nn.Parameter(torch.randn(d) * 0.02)
-            self.goal_proj = nn.Linear(d, dg)
-            self.goal_inject = nn.Linear(dg, d)
-            self.goal_tok = nn.Linear(dg, d)
-
-        # ③ slot seeds (+ fixed unit directions for deterministic eval-time SPLIT)
+        # ② slot seeds (+ fixed unit directions for deterministic eval-time SPLIT)
         self.seeds = nn.Parameter(torch.randn(S, d) * 0.02)
         self.register_buffer("split_dirs", F.normalize(torch.randn(S, d), dim=-1))
 
-        # ④ shared core
+        # ③ shared core.  Every module shared by far2_5m, far2_full, and
+        # far2_bind is constructed before optional mechanisms.  Consequently
+        # the same declared seed means the same shared initialization across
+        # ablations; adding a controller must not silently reseed the core.
         self.ln_read = nn.LayerNorm(d)
         self.self_attn = MHA(d, cfg.n_heads)
         self.ln_cross = nn.LayerNorm(d)
@@ -141,7 +132,21 @@ class FAR2Model(ReasoningModel):
         if cfg.iter_embedding:                        # ablation flag, default off
             self.core_iter_emb = nn.Embedding(cfg.n_iters_max, d)
 
-        # ⑥⑦ controllers  ⑧ epistemic — created only when their mechanism is on
+        # ④ decoder + shared head (also before optional mechanisms for the
+        # same initialization-parity contract).
+        self.ln_q = nn.LayerNorm(d)
+        self.dec_kv_ln = nn.LayerNorm(d)
+        self.dec_cross = MHA(d, cfg.n_heads)
+        self.ln_d2 = nn.LayerNorm(d)
+        self.dec_mlp = MLP(d, cfg.mlp_mult)
+        self.dec_ln = nn.LayerNorm(d)
+        self.head = nn.Linear(d, cfg.vocab_size)
+        # Output queries are deliberately non-contextual.  Reusing H at ANS
+        # positions gives the bidirectional encoder a direct residual path to
+        # the answer head and makes workspace causality impossible to prove.
+        self.out_pos = nn.Embedding(cfg.max_seq_len, d)
+
+        # ⑤⑥ controllers  ⑦ epistemic — created only when their mechanism is on
         if cfg.adaptive_slots:
             self.repr_ctrl = _ctrl(d + 4, h, 3)
         if self._needs_halt_ctrl:
@@ -153,14 +158,29 @@ class FAR2Model(ReasoningModel):
             self.epi_head = _ctrl(d, h, 5)            # extra, off by default
             self.type_emb = nn.Parameter(torch.randn(4, d) * 0.02)
 
-        # ⑨⑩ decoder + shared head
-        self.ln_q = nn.LayerNorm(d)
-        self.dec_kv_ln = nn.LayerNorm(d)
-        self.dec_cross = MHA(d, cfg.n_heads)
-        self.ln_d2 = nn.LayerNorm(d)
-        self.dec_mlp = MLP(d, cfg.mlp_mult)
-        self.dec_ln = nn.LayerNorm(d)
-        self.head = nn.Linear(d, cfg.vocab_size)
+        # ⑧ protected goal (read-only by construction: nothing writes g)
+        if cfg.protected_goal:
+            self.goal_query = nn.Parameter(torch.randn(d) * 0.02)
+            self.goal_proj = nn.Linear(d, dg)
+            self.goal_inject = nn.Linear(dg, d)
+            self.goal_tok = nn.Linear(dg, d)
+
+        # ⑨ binding substrate: variable->slot ownership and the learned
+        # direction for binding-directed SPLIT.  It is last so enabling the
+        # substrate cannot perturb any shared or controller initialization.
+        if cfg.binding:
+            self.bind_W = nn.Linear(d, d, bias=False)
+            self.split_dir_proj = nn.Linear(d, d, bias=False)
+            # Entity path: aggregate every occurrence of X_e, then let that
+            # query retrieve its full relational context from H.  This is the
+            # upstream representation used by ownership and collision
+            # detection; it does not replace the general content reader.
+            self.entity_ln_q = nn.LayerNorm(d)
+            self.entity_attn = MHA(d, cfg.n_heads)
+            self.entity_ln_mlp = nn.LayerNorm(d)
+            self.entity_mlp = MLP(d, 1, cfg.core_act)
+            self.entity_ln = nn.LayerNorm(d)
+            self.entity_value_head = nn.Linear(d, 10)
 
         # runtime state set by the curriculum
         self.unlocked: set[str] = set()
@@ -186,23 +206,63 @@ class FAR2Model(ReasoningModel):
             x = blk(x, mask)
         return self.enc_ln(x), mask
 
-    def _bind_matrix(self, H, Z, active, batch):
-        """B[e,s] = softmax_s(h_e^T W_B z_s / sqrt(d)) over ACTIVE slots.
-        h_e = encoder state at the variable's anchor position. Rows of
-        variables absent from the episode are meaningless — consumers mask
-        with var_valid. Differentiable: the binding-curriculum loss and the
-        directed-SPLIT projection train through it."""
-        pos = batch["var_pos"].clamp_min(0)                       # [B,V]
-        hv = torch.gather(H, 1, pos[..., None].expand(-1, -1, H.shape[-1]))
-        scores = self.bind_W(hv) @ Z.transpose(1, 2) / (self.cfg.d_model ** 0.5)
+    def _entity_states(self, H, pad_mask, batch):
+        """Contextual entity states E[e] from every rendered occurrence.
+
+        Occurrence masks are token-derived by collate; meta.vars supplies only
+        annealed training labels. Absent rows are exactly zero so no synthetic
+        entity can enter binding or collision search.
+        """
+        occ = batch["var_occurrence"].float()                     # [B,V,L]
+        present = occ.any(-1)
+        q = torch.einsum("bvl,bld->bvd", occ, H)
+        q = q / occ.sum(-1, keepdim=True).clamp_min(1.0)
+        ctx, _ = self.entity_attn(self.entity_ln_q(q), H, pad_mask)
+        E = q + ctx
+        E = E + self.entity_mlp(self.entity_ln_mlp(E))
+        return self.entity_ln(E) * present[..., None], present
+
+    def _bind_matrix(self, E, Z, active, ownership_bias=None):
+        """B[e,s] = softmax_s(E_e^T W_B z_s / sqrt(d)) over active CONCEPT
+        slots. Registers are masked before the softmax and can never own a
+        variable. Differentiable through both the entity and slot paths."""
+        scores = self.bind_W(E) @ Z.transpose(1, 2) / (self.cfg.d_model ** 0.5)
+        if ownership_bias is not None:
+            scores = scores + ownership_bias
         scores = scores + torch.where(active.bool(), 0.0, MASK_FILL)[:, None, :]
         return F.softmax(scores, dim=-1)                          # [B,V,S]
+
+    def _semantic_split_children(self, parent, entity_x, entity_y, scale):
+        """Create a conservative, swap-equivariant two-child bifurcation.
+
+        The existing binding projection supplies the shared midpoint direction;
+        the dedicated split projection supplies the antisymmetric direction.
+        A 2x2 Sinkhorn matrix then assigns the two entities to different child
+        columns.  No ground-truth identity or value enters this operation.
+        """
+        midpoint = 0.5 * (entity_x + entity_y)
+        difference = 0.5 * (entity_x - entity_y)
+        center_dir = F.normalize(self.bind_W(midpoint), dim=-1)
+        split_dir = F.normalize(self.split_dir_proj(difference), dim=-1)
+        center = parent + scale[:, None] * center_dir
+        child_x = self.rms_state(center + scale[:, None] * split_dir)
+        child_y = self.rms_state(center - scale[:, None] * split_dir)
+        children = torch.stack([child_x, child_y], dim=1)          # [B,2,d]
+        entities = torch.stack([entity_x, entity_y], dim=1)       # [B,2,d]
+        scores = (self.bind_W(entities) @ children.transpose(1, 2)
+                  / (self.cfg.d_model ** 0.5))
+        assignment = torch.exp(scores - scores.amax(dim=(1, 2), keepdim=True))
+        for _ in range(6):
+            assignment = assignment / assignment.sum(-1, keepdim=True).clamp_min(1e-8)
+            assignment = assignment / assignment.sum(-2, keepdim=True).clamp_min(1e-8)
+        return children, assignment
 
     def _goal(self, H, batch):
         # "goal" in disable_actions: the channel's parameters exist (param
         # identity with the reference model) but it is NEVER consulted —
         # required for slot_recurrent_bind to be a true zero-mechanism C
-        if not self.cfg.protected_goal or "goal" in self.cfg.disable_actions:
+        if (not self.cfg.protected_goal or "goal" not in self.unlocked
+                or "goal" in self.cfg.disable_actions):
             return None
         gm = batch["goal_mask"]
         scores = (H @ self.goal_query) / (self.cfg.d_model ** 0.5)
@@ -218,14 +278,72 @@ class FAR2Model(ReasoningModel):
             g = torch.roll(g, shifts=1, dims=0)
         return g
 
-    def _decode(self, Qa, Z, active, g_tok=None):
+    def _answer_queries(self, batch):
+        """Syntax-only output queries: query-token identity + answer rank.
+
+        No contextual encoder state enters this path.  Mathematical content
+        must first pass through Z; a variable token may address its bound slot
+        but cannot carry the variable's value itself.
+        """
+        ids = batch["answer_query_ids"]
+        rank = torch.arange(ids.shape[1], device=ids.device)
+        return self.tok(ids) + self.out_pos(rank)[None]
+
+    def _answer_binding(self, B_mat, batch):
+        """Gather query-variable ownership rows for answer routing.
+
+        Returns ([B,A,S] weights, [B,A] valid).  Queryless arithmetic families
+        retain the general decoder cross-attention; variable-query families
+        must read the slot their token-derived entity binding selects.
+        """
+        qv = batch["answer_query_vars"]
+        valid = qv >= 0
+        idx = qv.clamp_min(0)[..., None].expand(-1, -1, B_mat.shape[-1])
+        rows = B_mat.gather(1, idx)
+        return rows * valid[..., None], valid
+
+    def _init_workspace(self, H, pad_mask, active):
+        """Initialize the workspace without opening a decoder bypass from H.
+
+        ``input`` performs one read through the same cross-attention used by
+        the recurrent core. ``input_shuffled`` preserves the computation and
+        distribution while deliberately supplying another episode's evidence.
+        Inactive slots remain exact learned seeds for the drift contract.
+        """
+        cfg = self.cfg
+        B = H.shape[0]
+        Z = self.seeds[None].expand(B, -1, -1).clone()
+        if cfg.workspace_init not in ("learned", "input", "input_shuffled"):
+            raise ValueError(f"unknown workspace_init={cfg.workspace_init!r}")
+        if cfg.workspace_init == "learned":
+            return Z
+        init_H = torch.roll(H, 1, dims=0) if cfg.workspace_init == "input_shuffled" else H
+        init_mask = (torch.roll(pad_mask, 1, dims=0)
+                     if cfg.workspace_init == "input_shuffled" else pad_mask)
+        competitive = cfg.cross_mode == "competitive"
+        slot_q_mask = (torch.where(active.bool(), 0.0, MASK_FILL)
+                       [:, None, :, None] if competitive else None)
+        warm, _ = self.cross_attn(
+            self.ln_cross(Z), init_H, init_mask, competitive=competitive,
+            slot_mask=slot_q_mask)
+        candidate = Z + warm * active[..., None]
+        if cfg.state_norm == "post_rms":
+            candidate = torch.where(active[..., None].bool(),
+                                    self.rms_state(candidate), candidate)
+        return candidate
+
+    def _decode(self, Q, Z, active, g_tok=None, answer_binding=None):
         kv = self.dec_kv_ln(Z)
         mask = torch.where(active.bool(), 0.0, MASK_FILL)[:, None, None, :]
         if g_tok is not None:
             kv = torch.cat([kv, g_tok[:, None]], dim=1)
             mask = F.pad(mask, (0, 1))                # goal token always visible
-        a, _ = self.dec_cross(self.ln_q(Qa), kv, mask)
-        x = Qa + a
+        a, _ = self.dec_cross(self.ln_q(Q), kv, mask)
+        if answer_binding is not None:
+            weights, valid = answer_binding
+            routed = weights @ self.dec_kv_ln(Z)
+            a = torch.where(valid[..., None], routed, a)
+        x = Q + a
         x = x + self.dec_mlp(self.ln_d2(x))
         return self.head(self.dec_ln(x))
 
@@ -254,39 +372,42 @@ class FAR2Model(ReasoningModel):
             return torch.where(u < p_s, torch.full_like(keep, SPLIT),
                                torch.where(u < p_s + p_e,
                                            torch.full_like(keep, EXPAND), keep))
-        # oracle: the perfect-decision upper bound — force cfg.oracle_action
-        # exactly when the task condition says the pair must be kept distinct,
-        # once, mid-loop. Uses ground truth at run time: a bound, never a win.
+        # oracle: the perfect-decision upper bound.  One action is scheduled
+        # for EVERY broken pair, starting after the first workspace update.
+        # Ground truth is legal only in this upper-bound policy, never in the
+        # learned/random controllers or their signals.
         act = SPLIT if self.cfg.oracle_action == "split" else EXPAND
         name = self.cfg.oracle_action
-        req = batch.get("requires_distinction")
-        if req is None or name not in self.unlocked or t != max(1, T // 2):
+        demand = batch.get("oracle_split_count")
+        action_index = t - 1
+        if (demand is None or name not in self.unlocked or action_index < 0
+                or action_index >= T - 1):
             return keep
-        return torch.where(req == 1, torch.full_like(keep, act), keep)
+        return torch.where(demand > action_index,
+                           torch.full_like(keep, act), keep)
 
-    def _bind_collision(self, B_mat, Z, batch, allowed):
-        """Binding-space collision SEARCHED over every present variable pair:
-        C(x,y) = Overlap(B_x, B_y) * JSD(P_x, P_y) where P_e decodes the
-        binding-weighted state; the signal is max over pairs. Consumes ONLY
-        internal state plus variable PRESENCE (var_pos >= 0 — derivable from
-        the tokens). The episode's declared pair (batch["pair_idx"]) is
-        NEVER read here: it is evaluation/probe metadata, and a runtime
-        consumer would hand the controller the ground-truth answer to
-        "which pair is broken" (review #3, P0-1).
+    def _bind_collision(self, B_mat, entity_probs, present, relation, allowed):
+        """Binding-space collision searched over every INPUT-DERIVED relation:
+        C(x,y) = Overlap(B_x, B_y) * JSD(P(E_x), P(E_y)).
+
+        Incompatibility is decoded from encoder-side entity states, before
+        binding can collapse two concepts into the same slot. Candidate edges
+        are variables co-occurring in rendered clauses. The episode's declared
+        pair and requires_distinction label are never read here.
+
         Returns (C [B], SPLIT source slot [B], argmax pair [B,2] variable
-        indices, valid mask [B] bool). Heuristic signal: no gradient."""
+        indices, valid mask [B] bool, max overlap [B], max incompatibility
+        [B]). Heuristic signal: no gradient."""
         with torch.no_grad():
-            present = (batch["var_pos"] >= 0).float()             # [B,V]
             Bm = B_mat * allowed[:, None, :]                      # [B,V,S]
-            zc = torch.einsum("bvs,bsd->bvd", Bm, Z)              # concept state
-            P = F.softmax(self.head(self.dec_ln(zc)), dim=-1).clamp_min(1e-9)
             ov = torch.minimum(Bm[:, :, None], Bm[:, None]).sum(-1)   # [B,V,V]
+            P = entity_probs.clamp_min(1e-9)
             pi_, pj_ = P[:, :, None], P[:, None]
             m = 0.5 * (pi_ + pj_)
             jsd = 0.5 * ((pi_ * (pi_ / m).log()).sum(-1)
                          + (pj_ * (pj_ / m).log()).sum(-1))
             V = ov.shape[1]
-            ok = present[:, :, None] * present[:, None]
+            ok = present[:, :, None] * present[:, None] * relation
             ok = ok * (1 - torch.eye(V, device=ov.device))[None]
             C = ov * jsd * ok
             flat = C.flatten(1)
@@ -297,29 +418,52 @@ class FAR2Model(ReasoningModel):
             Bx, By = Bm[ar, xy[:, 0]], Bm[ar, xy[:, 1]]           # [B,S]
             src = (torch.minimum(Bx, By) - (1 - allowed) * 1e9).argmax(-1)
             valid = (ok.flatten(1) > 0).any(-1)
-            return bC, src, xy, valid
+            neg = torch.full_like(ov, -1.0)
+            max_ov = torch.where(ok.bool(), ov, neg).flatten(1).max(-1).values
+            max_jsd = torch.where(ok.bool(), jsd, neg).flatten(1).max(-1).values
+            return bC, src, xy, valid, max_ov.clamp_min(0), max_jsd.clamp_min(0)
 
     # ---- forward -------------------------------------------------------
     def forward(self, batch, n_iters=None, ipt=False, collect=False,
-                intervene=None) -> ModelOutput:
+                intervene=None, all_cycle_logits=False) -> ModelOutput:
         cfg = self.cfg
         B = batch["input_ids"].shape[0]
         S, d = cfg.max_slots, cfg.d_model
         dev = batch["input_ids"].device
-        T = min(n_iters or cfg.n_iters_train, cfg.n_iters_max)
+        # n_iters=0 is a deliberate evaluation-only readout of the initialized
+        # workspace.  It is the v0.4.52 Z0 shortcut control; treating zero as
+        # false and silently replacing it with the training depth would make
+        # initialization-dominant models look recurrent.
+        T = (cfg.n_iters_train if n_iters is None
+             else min(max(int(n_iters), 0), cfg.n_iters_max))
+        if self.training and T == 0:
+            raise ValueError("n_iters=0 is an evaluation-only Z0 diagnostic")
 
         H, pad_mask = self._encode(batch)
-        Qa = gather_ans(H, batch["ans_pos"])
+        Q = self._answer_queries(batch)
         g = self._goal(H, batch)
         gd = self.goal_inject(g) if g is not None else None
         g_tok = self.goal_tok(g) if g is not None else None
+        entity_states = None
+        entity_present = None
+        entity_logits = None
+        entity_probs = None
+        if cfg.binding:
+            # Computed once from immutable H.  Recurrent binding may change as
+            # slots change, but the entity-side evidence cannot be erased by a
+            # slot collision and is therefore a legitimate detector input.
+            entity_states, entity_present = self._entity_states(H, pad_mask, batch)
+            entity_logits = self.entity_value_head(entity_states)
+            entity_probs = F.softmax(entity_logits, dim=-1)
+        if cfg.split_impl == "semantic" and not cfg.binding:
+            raise ValueError("semantic SPLIT requires the binding substrate")
 
-        Z = self.seeds[None].expand(B, S, d).clone()
+        active = torch.zeros(B, S, device=dev)
+        active[:, : cfg.n_registers + cfg.init_slots] = 1.0
+        Z = self._init_workspace(H, pad_mask, active)
         if self.training:                      # jitter keeps seed roles flexible;
             Z = Z + cfg.slot_jitter * torch.randn_like(Z)   # eval is deterministic
         Z0_init = Z.detach().clone()
-        active = torch.zeros(B, S, device=dev)
-        active[:, : cfg.n_registers + cfg.init_slots] = 1.0
         # registers: always-active background slots — never SPLIT sources,
         # excluded from the collision pair search
         reg_mask = torch.zeros(S, device=dev)
@@ -330,6 +474,10 @@ class FAR2Model(ReasoningModel):
         # SEARCHED collision pair (never batch["pair_idx"] — see
         # _bind_collision). Initialized None; set in the loop when binding.
         pair_dir = None
+        split_pair = None
+        ownership_bias = (torch.zeros(B, N_VARS, S, device=dev)
+                          if cfg.binding else None)
+        semantic_assignments = []
         iters_used = torch.full((B,), T, dtype=torch.long, device=dev)
         counts = {k: torch.zeros(B, device=dev) for k in ("expand", "split", "reconsider")}
 
@@ -358,6 +506,7 @@ class FAR2Model(ReasoningModel):
         probe_preds = []
         C_max = torch.zeros(B, device=dev)
         ipt_logits = None
+        cycle_logits = []
         last_delta_sq = H.new_zeros(())
         halt_feats_last = None
         signals = None
@@ -436,31 +585,72 @@ class FAR2Model(ReasoningModel):
             # SPLIT train through it; the SIGNAL path below uses a detached copy)
             act_pair = active * (1 - reg_mask)[None]
             if cfg.binding:
-                B_mat = self._bind_matrix(H, Z, active, batch)
+                # Variable ownership is over CONCEPT slots only. Registers
+                # absorb background content and must never own a variable;
+                # otherwise collision search silently loses probability mass
+                # when it later excludes registers.
+                B_mat = self._bind_matrix(entity_states, Z, act_pair,
+                                          ownership_bias)
 
             # ⑤ collision monitor — heuristic signal, no gradient path by design
             with torch.no_grad():
                 slot_probs = self._slot_probs(Z)
                 cp = cross_probs.mean(1) if cross_probs is not None else None
                 sig = collision_signals(Z, act_pair, slot_probs, cp)
-            chosen = sig.get(cfg.collision_signal, sig["C"])
-            chosen_max = chosen.flatten(1).max(-1).values           # [B]
             bind_src = None
             pair_dir = None
             if B_mat is not None:
-                bC, bsrc, bxy, bvalid = self._bind_collision(
-                    B_mat.detach(), Z.detach(), batch, act_pair)
+                bC, bsrc, bxy, bvalid, bov, bej = self._bind_collision(
+                    B_mat.detach(), entity_probs.detach(),
+                    entity_present.float(), batch["var_rel"].float(), act_pair)
                 sig["bind"] = bC        # searched signal: a P4 candidate
-                if cfg.collision_signal == "bind":
-                    chosen_max = torch.where(bvalid, bC, chosen_max)
+                # Ownership overlap is also runtime-legitimate. P4 may select
+                # it independently; only the DECLARED-pair metric added by the
+                # evaluator carries the non-selectable `_probe` suffix.
+                sig["binding_overlap"] = bov
+                # Runtime-legitimate demand signal: unlike overlap, this asks
+                # whether a rendered relation contains incompatible entities.
+                # P4 may select it.  `bind` remains the localized
+                # demand-times-collision score used to choose the split source.
+                sig["entity_relation"] = bej
+                if cfg.collision_signal in ("bind", "entity_relation",
+                                            "binding_overlap"):
                     bind_src = (bsrc, bvalid)
-                # SPLIT direction from the SEARCHED pair's anchors —
-                # differentiable through H (only the search is no-grad)
-                ppos = torch.gather(batch["var_pos"], 1, bxy).clamp_min(0)
+                    split_pair = (bxy, bvalid)
+                # SPLIT direction from the SEARCHED pair's contextual entity
+                # states — differentiable through E (only search is no-grad).
                 arB = torch.arange(B, device=dev)
-                hb_ha = H[arB, ppos[:, 1]] - H[arB, ppos[:, 0]]
-                pair_dir = (F.normalize(self.split_dir_proj(hb_ha), dim=-1),
+                eb_ea = (entity_states[arB, bxy[:, 1]]
+                         - entity_states[arB, bxy[:, 0]])
+                pair_dir = (F.normalize(self.split_dir_proj(eb_ea), dim=-1),
                             bvalid.float())
+                # The oracle upper bound receives the complete broken-pair
+                # sequence, so its target is genuinely perfect.  Free and
+                # random policies stay on the searched, token-derived path.
+                oi = t - 1
+                if (cfg.repr_policy == "oracle"
+                        and cfg.oracle_action == "split"
+                        and 0 <= oi < batch["oracle_split_pairs"].shape[1]):
+                    opair = batch["oracle_split_pairs"][:, oi]
+                    oval = (opair >= 0).all(-1)
+                    safe = opair.clamp_min(0)
+                    ox = B_mat[arB, safe[:, 0]] * act_pair
+                    oy = B_mat[arB, safe[:, 1]] * act_pair
+                    osrc = torch.minimum(ox, oy).argmax(-1)
+                    bind_src = (osrc, oval)
+                    split_pair = (safe, oval)
+                    odiff = (entity_states[arB, safe[:, 1]]
+                             - entity_states[arB, safe[:, 0]])
+                    pair_dir = (F.normalize(self.split_dir_proj(odiff), dim=-1),
+                                oval.float())
+            chosen = sig.get(cfg.collision_signal, sig["C"])
+            chosen_max = (chosen if chosen.dim() == 1 else
+                          chosen.flatten(1).max(-1).values)         # [B]
+            if (B_mat is not None
+                    and cfg.collision_signal in ("bind", "entity_relation",
+                                                 "binding_overlap")):
+                chosen_max = torch.where(bvalid, chosen_max,
+                                         torch.zeros_like(chosen_max))
             C_max = torch.maximum(C_max, chosen_max)
             if collect:
                 # the signal at t informs the action at t, so t belongs to the
@@ -549,8 +739,8 @@ class FAR2Model(ReasoningModel):
                 # symmetry breaking is mandatory (identical copies are a saddle
                 # point); at eval the direction is a fixed buffer so runs replay.
                 # With binding, the clone direction is the LEARNED projection of
-                # the pair's anchor difference — S_src stays biased toward x,
-                # the clone starts biased toward y.
+                # the pair's contextual-entity difference — S_src stays biased
+                # toward x, the clone starts biased toward y.
                 if self.training:
                     noise = F.normalize(torch.randn(B, d, device=dev), dim=-1)
                 else:
@@ -558,14 +748,52 @@ class FAR2Model(ReasoningModel):
                 if pair_dir is not None:
                     dirv, pdv = pair_dir
                     noise = pdv[:, None] * dirv + (1 - pdv[:, None]) * noise
-                clone = src + cfg.split_beta * d_near[:, None] * noise
-                y_s = (y[:, SPLIT] * gate_ok)[:, None, None]
-                Z = Z * (1 - k_onehot[..., None] * y_s) + clone[:, None] * k_onehot[..., None] * y_s
+                semantic = cfg.split_impl == "semantic" and split_pair is not None
+                pair_valid = (split_pair[1].float() if semantic
+                              else torch.ones_like(gate_ok))
+                split_ok = gate_ok * pair_valid
+                y_s = (y[:, SPLIT] * split_ok)[:, None, None]
+                if semantic:
+                    pair, _ = split_pair
+                    ar = torch.arange(B, device=dev)
+                    ex = entity_states[ar, pair[:, 0]]
+                    ey = entity_states[ar, pair[:, 1]]
+                    children, assignment = self._semantic_split_children(
+                        src, ex, ey, cfg.split_beta * d_near)
+                    src_onehot = F.one_hot(src_idx, S).float()
+                    split_slots = src_onehot + k_onehot
+                    Z = Z * (1 - split_slots[..., None] * y_s)
+                    Z = Z + children[:, 0, None] * src_onehot[..., None] * y_s
+                    Z = Z + children[:, 1, None] * k_onehot[..., None] * y_s
 
-                hard_grow = ((hard == EXPAND) | (hard == SPLIT)).float() * gate_ok
+                    # Persist the discrete one-to-one ownership selected by
+                    # Sinkhorn. This prevents the next ordinary binding softmax
+                    # from silently collapsing both entities back onto one slot.
+                    fired = ((hard == SPLIT).float() * split_ok).bool()
+                    for bi in fired.nonzero(as_tuple=False).flatten().tolist():
+                        x, yy = pair[bi].tolist()
+                        x_child = int(assignment[bi, 0].argmax())
+                        slots = (int(src_idx[bi]), int(k_idx[bi]))
+                        sx, sy = slots[x_child], slots[1 - x_child]
+                        ownership_bias[bi, x].fill_(-12.0)
+                        ownership_bias[bi, yy].fill_(-12.0)
+                        ownership_bias[bi, x, sx] = 12.0
+                        ownership_bias[bi, yy, sy] = 12.0
+                        semantic_assignments.append({
+                            "batch": bi, "pair": [x, yy],
+                            "slots": [sx, sy],
+                            "sinkhorn": assignment[bi].detach().cpu().tolist(),
+                        })
+                else:
+                    clone = src + cfg.split_beta * d_near[:, None] * noise
+                    Z = (Z * (1 - k_onehot[..., None] * y_s)
+                         + clone[:, None] * k_onehot[..., None] * y_s)
+
+                hard_grow = ((hard == EXPAND).float() * gate_ok
+                             + (hard == SPLIT).float() * split_ok)
                 active = (active + k_onehot * hard_grow[:, None]).clamp(max=1.0)
                 counts["expand"] = counts["expand"] + (hard == EXPAND).float() * gate_ok
-                counts["split"] = counts["split"] + (hard == SPLIT).float() * gate_ok
+                counts["split"] = counts["split"] + (hard == SPLIT).float() * split_ok
                 acted = torch.clamp(acted + hard_grow, max=1.0)
 
             # ⑦ halt controller — RECONSIDER can run at a FIXED budget (P5a);
@@ -609,9 +837,12 @@ class FAR2Model(ReasoningModel):
                 recon_fire = torch.ones(B, device=dev)
 
             if recon_fire is not None:
-                # RECONSIDER: partial reset of active slots toward seeds; H untouched
+                # RECONSIDER: partial reset toward this episode's initialized
+                # workspace.  With input warm-start, resetting to generic seeds
+                # would erase the very evidence the foundation repair preserves.
                 y_r = (recon_fire * alive)[:, None, None]
-                blend = cfg.reconsider_alpha * Z + (1 - cfg.reconsider_alpha) * self.seeds[None]
+                blend = (cfg.reconsider_alpha * Z
+                         + (1 - cfg.reconsider_alpha) * Z0_init)
                 blend = active[..., None] * blend + (1 - active[..., None]) * Z
                 Z = y_r * blend + (1 - y_r) * Z
                 counts["reconsider"] = counts["reconsider"] + recon_fire * alive
@@ -623,15 +854,34 @@ class FAR2Model(ReasoningModel):
                 iters_used = torch.where(just.bool(), torch.tensor(t + 1, device=dev), iters_used)
                 alive = alive * (1 - just)
 
+            decode_binding = None
+            if cfg.binding:
+                decode_B = self._bind_matrix(
+                    entity_states, Z, active * (1 - reg_mask)[None],
+                    ownership_bias)
+                decode_binding = self._answer_binding(decode_B, batch)
             if collect:
                 with torch.no_grad():
-                    probe_preds.append(self._decode(Qa, Z, active, g_tok).argmax(-1))
+                    probe_preds.append(self._decode(
+                        Q, Z, active, g_tok, decode_binding).argmax(-1))
             if t + 1 == ipt_at and ipt_at != T:
-                ipt_logits = self._decode(Qa, Z, active, g_tok)
+                ipt_logits = self._decode(Q, Z, active, g_tok, decode_binding)
+            if all_cycle_logits and t + 1 < T:
+                cycle_logits.append(
+                    self._decode(Q, Z, active, g_tok, decode_binding))
             if not self.training and float(alive.sum()) == 0:
                 break
 
-        logits = self._decode(Qa, Z, active, g_tok)
+        answer_binding = None
+        if cfg.binding:
+            # Recompute after the last action/reset.  The previous B_mat was
+            # measured before that state mutation and is stale for decoding,
+            # binding loss, and telemetry.
+            act_pair = active * (1 - reg_mask)[None]
+            B_mat = self._bind_matrix(entity_states, Z, act_pair,
+                                      ownership_bias)
+            answer_binding = self._answer_binding(B_mat, batch)
+        logits = self._decode(Q, Z, active, g_tok, answer_binding)
 
         # ⑧ OPERATIONAL epistemic decision (review #3): the answer-level head
         # is a decision component, not a regularizer — at inference a
@@ -644,7 +894,6 @@ class FAR2Model(ReasoningModel):
             pooled_f = (Z * active[..., None]).sum(1) / n_active_per(active)
             epi_logits = self.ans_epi_head(pooled_f)
             if not self.training:
-                from far2.data.vocab import VOCAB
                 route = epi_logits.argmax(-1)                     # [B]
                 for cls, tok in ((UNDERDET, "UNDERDETERMINED"),
                                  (INCONSISTENT, "NO_SOLUTION")):
@@ -657,22 +906,24 @@ class FAR2Model(ReasoningModel):
                         logits[msk] = one
 
         loss_terms = {
-            "state_sq": state_sq / T,
+            "state_sq": state_sq / max(T, 1),
             "fp_delta": last_delta_sq,
-            "slot_cost": grow_pressure / T,
-            "iter_cost": cont_pressure / T,
-            "ctrl_entropy": entropies / T,
+            "slot_cost": grow_pressure / max(T, 1),
+            "iter_cost": cont_pressure / max(T, 1),
+            "ctrl_entropy": entropies / max(T, 1),
             "split_logit": split_logit,
             "reconsider_logit": reconsider_logit,
         }
         if ipt_logits is not None:
             loss_terms["ipt_logits"] = ipt_logits
+        if cycle_logits:
+            loss_terms["cycle_logits"] = torch.stack(cycle_logits, dim=1)
         # binding-curriculum loss: SOME slot bound to variable e must decode
         # e's value — a permutation-free soft assignment CE (mixture over the
         # ownership distribution). Annealed to zero before transfer claims.
         if cfg.binding and B_mat is not None:
             vv = batch["var_values"]
-            vmask = ((vv >= 0) & (batch["var_pos"] >= 0)).float()
+            vmask = ((vv >= 0) & entity_present).float()
             if vmask.sum() > 0:
                 p_slots = F.softmax(self.head(self.dec_ln(Z)), dim=-1)
                 tgt = vv.clamp_min(0)
@@ -680,6 +931,14 @@ class FAR2Model(ReasoningModel):
                     2, tgt[:, None, :].expand(-1, S, -1)).transpose(1, 2)
                 mix = (B_mat * pt).sum(-1).clamp_min(1e-9)
                 loss_terms["bind_nll"] = -(mix.log() * vmask).sum() / vmask.sum()
+            # Direct supervision makes E a testable entity representation,
+            # instead of hoping a first-token anchor incidentally contains the
+            # variable's relational value.  Labels never enter forward control.
+            emask = (vv >= 0) & entity_present
+            if emask.any():
+                digit0 = VOCAB.t("D0")
+                loss_terms["entity_nll"] = F.cross_entropy(
+                    entity_logits[emask], vv[emask] - digit0)
         if epi_logits is not None:
             loss_terms["ans_epi_logits"] = epi_logits
         if learned_halt and halt_feats_last is not None:
@@ -694,7 +953,8 @@ class FAR2Model(ReasoningModel):
             "split_count": counts["split"].tolist(),
             "reconsider_count": counts["reconsider"].tolist(),
             "state_norm": norms, "state_delta": deltas,
-            "gate_mean": float(G.detach().mean()),
+            "gate_mean": (float(G.detach().mean()) if T > 0
+                          else float("nan")),
             "C_max": C_max.tolist(),
             "attn_entropy": attn_ents,
         }
@@ -702,13 +962,19 @@ class FAR2Model(ReasoningModel):
             telemetry["probe_preds"] = torch.stack(probe_preds, dim=1)   # [B,T,A]
         if collect and cross_final is not None:
             telemetry["cross_attn"] = cross_final                        # [B,S,L]
-            telemetry["active_mask"] = active.detach()                   # [B,S]
         if collect:
+            # Required even at the v0.4.52 Z0 readout, where no recurrent
+            # cross-attention step has produced `cross_final` yet.
+            telemetry["active_mask"] = active.detach()                   # [B,S]
             telemetry["Z_final"] = Z.detach()      # [B,S,d] for linear probes
             telemetry["H"] = H.detach()            # [B,L,d] for location probes
             telemetry["n_registers"] = cfg.n_registers
             if B_mat is not None:
                 telemetry["bind_matrix"] = B_mat.detach()   # [B,V,S] ownership
+                telemetry["entity_states"] = entity_states.detach()  # [B,V,d]
+                telemetry["entity_present"] = entity_present.detach()
+                telemetry["entity_value_logits"] = entity_logits.detach()
+                telemetry["semantic_split_assignments"] = semantic_assignments
         if collect and signals is not None:
             telemetry["signal_max"] = {
                 k: (v.flatten(1).max(-1).values if v.dim() == 3 else v).tolist()
@@ -725,17 +991,26 @@ class FAR2Model(ReasoningModel):
             telemetry["inactive_drift"] = float(drift)
         return ModelOutput(logits, loss_terms, telemetry)
 
-    def flops_per_sample(self, seq_len, n_iters, n_ans=1, active_slots=None):
+    def flops_per_sample(self, seq_len, n_iters, n_ans=1, active_slots=None,
+                         n_decodes=1):
         cfg = self.cfg
-        d, V = cfg.d_model, cfg.vocab_size
+        d, vocab = cfg.d_model, cfg.vocab_size
         S = active_slots if active_slots is not None else cfg.max_slots
         enc = sum(2 * n_params(b) * seq_len for b in self.encoder) + 4 * seq_len ** 2 * d
+        entity = 0
+        if cfg.binding:
+            # One immutable-H entity read: projections + VxL attention, the
+            # compact entity MLP, and the ten-way value head.
+            entity = (4 * d * d * (N_VARS + seq_len)
+                      + 4 * N_VARS * seq_len * d
+                      + 2 * n_params(self.entity_mlp) * N_VARS
+                      + 2 * d * 10 * N_VARS)
         core_p = (n_params(self.self_attn) + n_params(self.cross_attn)
                   + n_params(self.mlp) + n_params(self.gate))
         per_iter = 2 * core_p * S + 4 * S * S * d + 4 * S * seq_len * d
         dec = 2 * (n_params(self.dec_cross) + n_params(self.dec_mlp)) * n_ans \
-            + 4 * n_ans * (S + 1) * d + 2 * d * V * n_ans
-        return enc + n_iters * per_iter + dec
+            + 4 * n_ans * (S + 1) * d + 2 * d * vocab * n_ans
+        return enc + entity + n_iters * per_iter + n_decodes * dec
 
 
 def n_active_per(active: torch.Tensor) -> torch.Tensor:

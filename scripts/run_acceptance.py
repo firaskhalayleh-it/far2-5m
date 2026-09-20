@@ -2,11 +2,13 @@
 mandatory-three-plus-two rule computed from CONFIRM-STAGE evidence across
 seeds, never eyeballed:
 
+  F0 capability prerequisite fresh-ID competence + Z0/T1/T4/T8 recurrent
+                             contribution + complete matched controls
   M1 computation adaptation    in-dist competence + depth grid + T16
                                stability + L-matched counterexample
   M2 representation adaptation P3a-necessity prerequisite + phase3b quartet
-                               (vs fixed16 / random / rho / surface /
-                               binding separation)
+                               (vs fixed14 / random / rho / surface /
+                               binding separation) + direct Transformer report
   M3 operator transfer         held-out sym_poly splits + rational_trap,
                                capability-validated against the checkpoint
 plus >= 2 of: P5a reconsideration · P5b halting · P6 epistemics (incl. the
@@ -111,9 +113,9 @@ def pooled_counts(recs_by_seed, fn):
     return k, n
 
 
-def pooled_mean(recs_by_seed, key) -> float:
+def pooled_mean(recs_by_seed, key, pred=lambda r: True) -> float:
     vals = [r[key] for _, recs in recs_by_seed
-            for r in recs if r.get(key) is not None]
+            for r in recs if pred(r) and r.get(key) is not None]
     return sum(vals) / len(vals) if vals else float("nan")
 
 
@@ -147,7 +149,37 @@ class Claim:
             print(f"     {'ok ' if ok else 'NO '} {label}: {detail}")
 
 
-# ---- mandatory ------------------------------------------------------------
+# ---- foundation prerequisite + mandatory claims ---------------------------
+def foundation_capability(out, seeds):
+    """v0.4.52: smoke plumbing cannot substitute for real-task capability."""
+    c = Claim("F0 · v0.4.52 real-task capability prerequisite")
+    for seed in seeds:
+        root = os.path.join(out, f"foundation_curve_seed{seed}")
+        path = os.path.join(root, "foundation_curve.json")
+        if not os.path.exists(path):
+            c.not_testable(f"seed {seed}: {path} missing")
+            continue
+        try:
+            with open(path) as fh:
+                js = json.load(fh)
+        except Exception as e:
+            c.not_testable(f"seed {seed}: unreadable foundation summary: {e}")
+            continue
+        c.check(f"s{seed} capability contract is v0.4.52",
+                js.get("version") == "0.4.52",
+                f"version={js.get('version')!r}")
+        verdict = js.get("capability_verdict", {})
+        c.check(f"s{seed} fresh-ID/Z0/T1/T8 capability gate",
+                verdict.get("verdict") == "PASS",
+                json.dumps(verdict, sort_keys=True))
+        cfg = run_cfg(root, "far2_fixed14_warm") or {}
+        steps = cfg.get("train", {}).get("steps", 0)
+        c.check(f"s{seed} foundation reaches confirm budget",
+                not BUDGET["min_steps"] or steps >= BUDGET["min_steps"],
+                f"steps={steps}, required={BUDGET['min_steps']}")
+    return c
+
+
 def m1_computation(out, seeds):
     c = Claim("M1 · computation adaptation (mandatory)")
     pat = "phase2_random_seed{seed}"
@@ -187,41 +219,60 @@ def m2_representation(out, seeds, tagged):
     c = Claim("M2 · representation adaptation (mandatory)")
     pat_a = f"phase3b_adaptive{tagged}_seed{{seed}}"
     pat_r = f"phase3b_random{tagged}_seed{{seed}}"
-    pat_16 = f"phase3a_fixed16{tagged}_seed{{seed}}"
-    pat_4 = f"phase3a_fixed4{tagged}_seed{{seed}}"
+    pat_14 = f"phase3a_fixed14{tagged}_seed{{seed}}"
+    pat_8 = f"phase3a_fixed8{tagged}_seed{{seed}}"
+    pat_t = f"phase3a_transformer_ref{tagged}_seed{{seed}}"
     adp = load(out, pat_a, seeds, "phase3b")
     rnd = load(out, pat_r, seeds, "phase3b")
-    f16 = load(out, pat_16, seeds, "phase3a")
-    f4 = load(out, pat_4, seeds, "phase3a")
+    f14 = load(out, pat_14, seeds, "phase3a")
+    f8 = load(out, pat_8, seeds, "phase3a")
+    tr = load(out, pat_t, seeds, "phase3a")
     if not complete(c, adp, seeds, "phase3b adaptive", out, pat_a):
+        return c
+    if not complete(c, tr, seeds, "matched Transformer reference", out, pat_t):
         return c
     sym = lambda r: r["family"] == "symbreak"
     dq = lambda r: sym(r) and r.get("requires_distinction") == 1
+    ka_t, na_t, _ = pooled(adp, dq)
+    kt, nt, _ = pooled(tr, dq)
+    if na_t != nt:
+        c.not_testable("adaptive and Transformer reference evaluation cells "
+                       f"differ (n={na_t} vs {nt})")
+        return c
+    acc_a = ka_t / na_t if na_t else float("nan")
+    acc_t = kt / nt if nt else float("nan")
+    fl_a = pooled_mean(adp, "flops", dq)
+    fl_t = pooled_mean(tr, "flops", dq)
+    fl_ratio = fl_a / fl_t if fl_t == fl_t and fl_t > 0 else float("nan")
+    c.check("direct Transformer comparison recorded", True,
+            f"adaptive={acc_a:.1%} vs Transformer={acc_t:.1%} "
+            f"(delta={acc_a - acc_t:+.1%}); inference FLOPs ratio="
+            f"{fl_ratio:.2f}x")
     # PREREQUISITE (P3a stop rule at confirm scale): the benchmark must
     # require representation, else the whole quartet is uninformative and a
     # controller is CORRECT never to split
-    if complete(c, f4, seeds, "phase3a fixed4 (necessity prerequisite)",
-                out, pat_4) and complete(c, f16, seeds, "fixed16 control",
-                                         out, pat_16):
-        k16d, n16d, _ = pooled(f16, dq)
-        k4d, n4d, _ = pooled(f4, dq)
-        ok, d = superiority(k16d, n16d, k4d, n4d, margin=0.05)
+    if complete(c, f8, seeds, "phase3a fixed8 (necessity prerequisite)",
+                out, pat_8) and complete(c, f14, seeds, "fixed14 control",
+                                         out, pat_14):
+        k14d, n14d, _ = pooled(f14, dq)
+        k8d, n8d, _ = pooled(f8, dq)
+        ok, d = superiority(k14d, n14d, k8d, n8d, margin=0.05)
         if not ok:
             c.not_testable("P3a necessity failed at confirm scale — the "
                            f"benchmark does not require representation ({d})")
             return c
-        c.check("prerequisite: fixed16 > fixed4 on distinction queries (+5pts)",
+        c.check("prerequisite: fixed14 > fixed8 on distinction queries (+5pts)",
                 ok, d)
         ka, na, pa = pooled(adp, sym)
-        kf, nf, _ = pooled(f16, sym)
+        kf, nf, _ = pooled(f14, sym)
         ok, d = non_inferiority(ka, na, kf, nf, margin=0.01)
-        c.check("adaptive NI fixed16 (1pt)", ok, d + f" · {seed_note(pa)}")
-        # the allocation half: matching fixed16 is only interesting at
+        c.check("adaptive NI fixed14 (1pt)", ok, d + f" · {seed_note(pa)}")
+        # the allocation half: matching fixed14 is only interesting at
         # materially LOWER slot-compute
         sc_a = (pooled_mean(adp, "active_slots")
                 * pooled_mean(adp, "iters_used"))
-        sc_f = (pooled_mean(f16, "active_slots")
-                * pooled_mean(f16, "iters_used"))
+        sc_f = (pooled_mean(f14, "active_slots")
+                * pooled_mean(f14, "iters_used"))
         rho = sc_a / sc_f if sc_f == sc_f and sc_f else float("nan")
         c.check("compute ratio rho <= 0.70", rho == rho and rho <= 0.70,
                 f"rho={rho:.2f} ({sc_a:.1f} vs {sc_f:.1f} slot·iters)")
@@ -472,6 +523,7 @@ def main():
     print(f"[acceptance] root={args.out} seeds={args.seeds} "
           f"substrate={args.substrate} min_steps={args.min_steps}")
 
+    foundation = foundation_capability(args.out, args.seeds)
     mandatory = [m1_computation(args.out, args.seeds),
                  m2_representation(args.out, args.seeds, tagged),
                  m3_transfer(args.out, args.seeds, tagged)]
@@ -525,19 +577,20 @@ def main():
     ]
 
     print("\n================ ACCEPTANCE (confirm stage) ================")
-    for c in mandatory + optional:
+    for c in [foundation] + mandatory + optional:
         c.show()
     n_m = sum(c.ok for c in mandatory)
     n_o = sum(c.ok for c in optional)
-    verdict = n_m == 3 and n_o >= 2
+    verdict = foundation.ok and n_m == 3 and n_o >= 2
     if len(args.seeds) < 2:
         # error bars are undefined on one seed: the rule can FAIL but a
         # single seed can never certify acceptance (review #3)
         print("\n  HARD RULE: fewer than 2 seeds — acceptance is impossible; "
               "rerun with --seeds covering >= 2 trained seeds")
         verdict = False
-    print(f"\n  mandatory: {n_m}/3 · optional: {n_o}/{len(optional)} "
-          f"(need 3 + >=2)")
+    print(f"\n  foundation: {'PASS' if foundation.ok else 'FAIL'} · "
+          f"mandatory: {n_m}/3 · optional: {n_o}/{len(optional)} "
+          f"(need foundation + 3 + >=2)")
     print(f"  VERDICT: {'ACCEPTED at 5M' if verdict else 'NOT ACCEPTED'}"
           " — transfer is reported with seed error bars either way")
     sys.exit(0 if verdict else 1)

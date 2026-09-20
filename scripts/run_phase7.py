@@ -29,7 +29,9 @@ def main():
     recs = {}
     for arm, mc in arms.items():
         tc = make_tc(args, f"phase7_{arm}_seed{args.seed}")
-        t = train(mc, tc, single_stage(mix, depth="random", ipt_alpha=0.5))
+        unlocked = {"goal"} if mc.protected_goal else set()
+        t = train(mc, tc, single_stage(mix, unlocked=unlocked,
+                                      depth="random", ipt_alpha=0.5))
         recs[arm] = run_eval(t, [EvalSpec("optimize", [2, 4, 6, 8],
                                           n_samples=args.eval_samples)], "phase7")
 

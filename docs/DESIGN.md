@@ -7,7 +7,7 @@ is the authority on parameter counts.
 ## v0.2 validity revision (reviewer pass, 2026-08-22)
 
 1. **Slot-recurrent baseline C** (`slot_recurrent_5m`): FAR² topology with zero operators,
-   parameter-identical to `far2_5m` (both 4,545,992 as of v0.4). D−C isolates the FAR²
+   parameter-identical to `far2_5m` (both 4,709,832 as of v0.4.5). D−C isolates the FAR²
    contribution from the latent-bottleneck advantage; C also joins Phase 0 and the ablation grid.
 2. **Family-token leak closed**: the leading F-token is shuffled per episode in training
    AND evaluation (`family_token_mode="random"` default), so `F6 → SPLIT` cannot be
@@ -63,11 +63,12 @@ capacity, noise, or auxiliary losses) carry the value*.
    are matched to the trained learned arm's measured firing rates by the
    scripts. Eval-time random draws come from fixed per-iteration seeds so
    control arms replay deterministically.
-2. **Necessity-vs-allocation quartet** (`run_phase3b.py`): fixed4 / random /
-   fixed16 / adaptive, with the pre-registered reading printed: random closes
-   the capacity gap → capacity/noise story; adaptive ≈ fixed16 at ≤70%
-   slot-compute while random ≈ fixed4 → intelligent allocation; adaptive >
-   fixed16 while random ≈ fixed4 → restructuring beyond capacity.
+2. **Necessity-vs-allocation quartet** (`run_phase3b.py`): fixed8 / random /
+   fixed14 / adaptive. Eight is the semantic floor (one slot per unresolved
+   pair); fourteen is the ceiling (eight plus max R=6). Random closes the
+   capacity gap → capacity/noise story; adaptive ≈ fixed14 at ≤70%
+   slot-compute while random ≈ fixed8 → intelligent allocation; adaptive >
+   fixed14 while random ≈ fixed8 → restructuring beyond capacity.
 3. **Episode-level do() interventions** (`run_interventions.py`,
    `forward(..., intervene={"block": {...}, "force": [(op, t)]})`): replay the
    *same episode* (eval is deterministic) with one operator blocked on
@@ -152,40 +153,89 @@ standard substrate. The substrate program (R0–R9, see ROADMAP):
 1. **R0 probe self-validation** before any claim: planted encodings recovered
    >95%, shuffled labels ≈ chance — else the instrument, not the model, is
    broken and nothing is reported.
-2. **R1 location probes** (bound / wrong slot / pooled Z / encoder H anchor /
-   nonlinear) with the Case A–D diagnosis: distributed / bottleneck /
-   upstream / nonlinear — WHERE the value lives decides what gets fixed.
-3. **Competitive binding attention** (`cross_mode="competitive"`): softmax
-   over SLOTS per evidence token (Slot-Attention bias) — slots compete for
-   evidence instead of all reading everything.
-4. **Register slots** (`n_registers=2`): always active, never split sources —
-   background information needs somewhere to go that isn't a concept slot.
-5. **Binding matrix** `B[e,s] = softmax_s(h_e^T W_B z_s)`: differentiable
-   variable→slot ownership; drives collision detection
-   (`Collision = Overlap(B_x,B_y) × JSD(P_x,P_y)`, comparing CONCEPTS not
-   slot pairs), the SPLIT source, and the directed split
-   `z_new = z_src + β·Normalize(proj(h_y − h_x))`.
+2. **R1 location probes** (bound / wrong slot / pooled Z / contextual entity E /
+   legacy encoder H first-occurrence / nonlinear) with the Case A–D diagnosis:
+   distributed / bottleneck / upstream / nonlinear — WHERE the value lives
+   decides what gets fixed. H-first-occurrence is retained only as a weak
+   baseline; E is the strict upstream representation probe.
+3. **Content/ownership separation**: ordinary cross-attention remains the
+   general content reader. Variable ownership is handled by the explicit
+   binding matrix below. Replacing content attention with token-to-slot
+   competitive normalization failed the core-retention check, so it remains
+   an ablation rather than the production binding path.
+4. **Register slots** (`n_registers=2`): always active, never split sources or
+   variable owners — background information needs somewhere to go that isn't
+   a concept slot.
+5. **Contextual entity path + binding matrix.** For every variable, all token
+   occurrences are mean-pooled and used as a query over immutable encoder H;
+   a residual MLP produces `E_e`. Then
+   `B[e,s] = softmax_s(E_e^T W_B z_s)` gives differentiable variable→concept-
+   slot ownership. Collision detection is
+   `Overlap(B_x,B_y) × JSD(P(E_x),P(E_y))`: incompatibility is measured before
+   a slot collision can erase it. P4 may select `entity_relation = max JSD` as
+   the representation-demand trigger; the product remains the localization
+   law that chooses the SPLIT source and direction
+   `z_new = z_src + β·Normalize(proj(E_y − E_x))`.
    **Searched, never told** (review #3): the collision is maximized over
-   ALL variable pairs present in the tokens (`var_pos ≥ 0`); the argmax
-   pair supplies the source slot and the direction. The episode's declared
+   variable relations derived from SEP-delimited input clauses; the argmax
+   pair supplies the source slot and direction. The episode's declared
    pair (`batch["pair_idx"]`) is evaluation/probe metadata only — a
    contract test perturbs it and asserts bit-identical logits and
    telemetry, so the controller can never be handed "which pair is broken".
-6. **Binding curriculum** (`bind_nll`, permutation-free soft-assignment CE):
-   annealed 0.5 → 0.25 → 0 across stages; zero before any transfer claim.
-7. **R8 usage-prerequisite gates before causal claims**: UsageRate ≥ 15%,
+6. **Entity/binding curriculum** (`entity_nll` plus permutation-free
+   soft-assignment `bind_nll`): annealed 0.5 → 0.25 → 0 across stages; labels
+   supervise geometry during training but never enter runtime control, and the
+   weight is zero before any transfer claim.
+7. **Checkpoint and short-run fidelity:** bind checkpoints predating the
+   contextual entity substrate are rejected instead of loading random missing
+   modules under `strict=False`. Diagnostic runs below 1,000 steps use EMA
+   0.99; confirm-scale runs retain EMA 0.999. Both choices are serialized in
+   `config.json`/`ckpt.pt`.
+8. **R8 usage-prerequisite gates before causal claims**: UsageRate ≥ 15%,
    FalseUsage ≤ 5%. "Condition present 500×, operator used 3×" is
    **USAGE-FAILURE** — the controller did not learn the operator — and is
    never conflated with NOT-TESTABLE (population too small). Four-state
    verdicts everywhere: PASS / FAIL / NOT-TESTABLE / USAGE-FAILURE.
-8. **R4 strict probe gates** on the binding substrate: bound ≥ chance+20pts,
+9. **R4 strict probe gates** on the binding substrate: bound ≥ chance+20pts,
    bound − wrong ≥ 15pts with exact McNemar — else SPLIT claims are reported
    as capacity allocation.
-9. **No 30M scale-up** until the substrate program produces a surviving core
+10. **No 30M scale-up** until the substrate program produces a surviving core
    result at 5M.
-10. **Campaign funnel** (`run_campaign.py`): smoke → pilot (killer-result
+11. **Campaign funnel** (`run_campaign.py`): smoke → pilot (killer-result
     chain with stop rules; P5–P7 deferred) → confirm (survivors, evals in the
     thousands) → seeds → grid. Training selective, evaluation large.
+
+## v0.4.52 capability-first foundation (2026-08-29)
+
+The v0.4.51 repair proved that information can travel through the workspace,
+but its foundation gate still mixed competence, extrapolation, initialization,
+and optimization.  v0.4.52 makes them independent and enforceable:
+
+1. **ID/OOD separation.** Symbreak trains through R=4. Fresh R∈{1,2,4}
+   episodes determine mathematical readiness; R=6 is an OOD report and cannot
+   drag a competent substrate below the entry gate or inflate an ID claim.
+2. **Z0 is a supported evaluation depth.** FAR2 accepts `n_iters=0` only in
+   evaluation, decodes the initialized workspace, and accounts zero recurrent
+   FLOPs.  The capability curve is paired Z0/T1/T4/T8.
+3. **Practical curriculum, honest endpoint.** The fixed14 candidate moves
+   through easy plumbing → mathematical rules → the real P3 pressure, but the
+   measured candidate remains final-answer-only, operator-free, and receives
+   no oracle/entity/binding labels.  All-cycle and learned-seed variants are
+   explicit diagnostics.
+4. **Controls are part of capability.** The 5.7M Transformer and
+   parameter-identical slot-recurrent-bind arm are mandatory; steps, unique
+   examples, intermediate-supervised states, and FLOPs remain in every curve.
+5. **No toy promotion.** Fewer than 4,000 updates or 400 fresh episodes per
+   cell is NOT-TESTABLE for F0. Confirm acceptance separately enforces its
+   larger budget and complete seed set.
+6. **Frozen transfer is executable law.** `run_transfer.py` rejects training
+   contracts containing held-out families, performs zero optimizer updates,
+   and fingerprints the state before and after evaluation.  Reusing an
+   operator on an unseen grammar is transfer; retraining it is not.
+
+This revision does not claim higher capability before a run.  It improves the
+learning path and prevents a toy task, a flat answer-laden initializer, an OOD
+mixture, or per-family retraining from satisfying the v0.4 gate.
 
 ## Shared I/O contract
 
@@ -244,12 +294,12 @@ standard substrate. The substrate program (R0–R9, see ROADMAP):
   correctness head), and the free convergence rule r_t = ‖ΔZ‖∞/(‖Z‖∞+ε) < 0.1 as the honest control
   (the literature says learned halting rarely beats it).
 
-## Parameter budgets (v0.4 counts; printed at startup, asserted 4.2–5.8M in tests)
+## Parameter budgets (v0.4.5 counts; printed at startup, asserted 4.2–5.8M in tests)
 
 - `transformer_5m` 4,917,576 · `recurrent_5m` 4,561,480
-- `slot_recurrent_5m` = `far2_5m` = 4,545,992
-- `far2_full` 4,775,763 · `far2_bind` = `far2_bind_random_expand` =
-  `far2_bind_oracle` = **`slot_recurrent_bind`** = 4,980,563
+- `slot_recurrent_5m` = `far2_5m` = 4,709,832
+- `far2_full` 4,939,603 · `far2_bind` = `far2_bind_random_expand` =
+  `far2_bind_oracle` = **`slot_recurrent_bind`** = 5,765,853
   (v0.4.2: the bind-substrate C is built FROM `far2_bind` with every
   mechanism in `disable_actions` — expand/split/halt/reconsider/epistemic
   AND the goal channel ("goal" makes `_goal` return None) — modules exist

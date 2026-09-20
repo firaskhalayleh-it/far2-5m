@@ -161,6 +161,24 @@ def plot_recovery(runs) -> str:
     return img("Wrong trajectory → reconsideration (recovery)", fig_to_b64())
 
 
+def training_contract_table(runs) -> str:
+    """Make hidden stage overrides visible in the rendered artifact."""
+    rows = ["<section><h2>Training contract</h2><table><tr><th>run</th>"
+            "<th>params</th><th>steps</th><th>stages</th>"
+            "<th>operators unlocked</th></tr>"]
+    for name, run in runs.items():
+        cfg = run["config"]
+        stages = cfg.get("curriculum", [])
+        stage_names = ", ".join(s.get("name", "?") for s in stages) or "legacy / unrecorded"
+        unlocked = sorted({op for s in stages for op in s.get("unlocked", [])})
+        rows.append(
+            f"<tr><td>{name}</td><td>{cfg.get('params', '?')}</td>"
+            f"<td>{cfg.get('train', {}).get('steps', '?')}</td>"
+            f"<td>{stage_names}</td><td>{', '.join(unlocked) or 'neutral'}</td></tr>")
+    rows.append("</table></section>")
+    return "".join(rows)
+
+
 def ablation_table(root: str) -> str:
     path = os.path.join(root, "ablation_summary.json")
     if not os.path.exists(path):
@@ -197,7 +215,8 @@ def main():
         print(f"no runs found under {args.root}")
         sys.exit(1)
 
-    sections = [plot_losses(runs), plot_acc_vs_depth(runs), plot_family_acc(runs),
+    sections = [training_contract_table(runs), plot_losses(runs),
+                plot_acc_vs_depth(runs), plot_family_acc(runs),
                 plot_compute_alloc(runs), plot_repr_alloc(runs),
                 plot_recovery(runs), ablation_table(args.root)]
     body = "\n".join(s for s in sections if s)

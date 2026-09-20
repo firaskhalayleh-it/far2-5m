@@ -50,10 +50,16 @@ def main():
     ranked = sorted(aurocs.items(), key=lambda kv: -(kv[1] if kv[1] == kv[1] else -1))
     for k, v in ranked:
         marker = ("  <- C = Sim x Div (the FAR2 hypothesis)" if k == "C" else
-                  "  <- searched over all pairs (runtime-legitimate)"
+                  "  <- demand x ownership overlap (runtime-legitimate)"
                   if k == "bind" else
-                  "  (needs ground truth / post-action: displayed, NOT "
-                  "selectable)" if k.endswith(("_post", "_probe")) else "")
+                  "  <- entity demand (runtime-legitimate)"
+                  if k == "entity_relation" else
+                  "  <- ownership overlap (runtime-legitimate)"
+                  if k == "binding_overlap" else
+                  "  (needs declared ground truth: displayed, NOT selectable)"
+                  if k.endswith("_probe") else
+                  "  (post-action: displayed, NOT selectable)"
+                  if k.endswith("_post") else "")
         print(f"  {k:<18} {v:.3f}{marker}")
 
     eligible = [(k, v) for k, v in ranked
@@ -84,8 +90,9 @@ def main():
         if os.path.exists(sel_path):
             os.remove(sel_path)
             print(f"\n  removed stale {sel_path}")
-        print("  NO selection written (gate failed) — phase3b will fall back "
-              "to the substrate default signal.")
+        print("  NO selection written (gate failed) — production phase3b will "
+              "refuse to train; only --mini wiring mode or an explicit "
+              "--signal can bypass selection.")
     finish(gate.report())
 
 

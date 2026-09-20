@@ -1,4 +1,4 @@
-"""Named model configs. The three 5M presets are budget-matched (each asserted
+"""Named model configs. The main 5M presets are budget-matched (each asserted
 within 4.2–5.8M by tests); `*_tiny` variants exist for tests and the smoke run.
 Ablation presets differ from far2_5m by exactly one mechanism each."""
 
@@ -12,13 +12,19 @@ def transformer_5m() -> ModelConfig:
                        n_layers=6)
 
 
+def transformer_bind_match() -> ModelConfig:
+    """Near-parameter-matched Transformer control for the 5.77M bind model."""
+    return ModelConfig(kind="transformer", d_model=256, n_heads=4, mlp_mult=4,
+                       n_layers=7)
+
+
 def recurrent_5m() -> ModelConfig:
     return ModelConfig(kind="recurrent", d_model=512, n_heads=4, mlp_mult=6)
 
 
 def far2_5m() -> ModelConfig:
     return ModelConfig(kind="far2", d_model=320, n_heads=4, mlp_mult=4,
-                       max_slots=16, init_slots=4)
+                       max_slots=16, init_slots=4, workspace_init="input")
 
 
 def slot_recurrent_5m() -> ModelConfig:
@@ -101,12 +107,13 @@ def far2_goal_scrambled() -> ModelConfig:
 
 # ---- v0.4 binding substrate (R3+: Research Problem #1) --------------------
 def far2_bind() -> ModelConfig:
-    """far2_full on the competitive-binding workspace: evidence tokens choose
-    their owner slot (Slot-Attention bias), 2 register slots absorb
-    background, the variable->slot binding matrix drives collision detection
-    and directed SPLIT. The substrate that makes 'slot = concept' testable."""
-    return replace(far2_full(), cross_mode="competitive", n_registers=2,
-                   binding=True, collision_signal="bind")
+    """far2_full with contextual entities and explicit variable-to-slot
+    binding: standard attention preserves the general content path, 2 register
+    slots absorb background, and the concept-only binding matrix drives
+    collision detection and directed SPLIT. This makes 'slot = concept'
+    testable without trusting a single legacy token anchor."""
+    return replace(far2_full(), cross_mode="standard", n_registers=2,
+                   binding=True, collision_signal="bind", split_impl="semantic")
 
 
 def far2_bind_random_expand() -> ModelConfig:
@@ -121,12 +128,12 @@ def far2_bind_oracle() -> ModelConfig:
 
 
 def slot_recurrent_bind() -> ModelConfig:
-    """Baseline C on the competitive workspace — PARAM-IDENTICAL control for
+    """Baseline C on the explicit-binding workspace — PARAM-IDENTICAL control for
     far2_bind: the FAR² modules exist (and cost their parameters) but every
-    operator is disabled, so behaviorally it is a fixed 14+2-slot competitive
+    operator is disabled, so behaviorally it is a fixed 14+2-slot contextual
     workspace. Built from far2_bind, not slot_recurrent_5m, so 'D beats C' can
-    never be a 435k-parameter artifact (review blocker: 4,980,563 vs
-    4,545,992 under a param-matched claim)."""
+    never be an entity-substrate parameter artifact (5,765,853 vs
+    4,709,832 under a param-matched claim)."""
     return replace(far2_bind(), init_slots=14, n_iters_train=8,
                    disable_actions=("expand", "split", "halt", "reconsider",
                                     "epistemic", "goal"))
@@ -143,7 +150,9 @@ def _tiny(cfg: ModelConfig) -> ModelConfig:
 
 
 PRESETS = {
-    "transformer_5m": transformer_5m, "recurrent_5m": recurrent_5m,
+    "transformer_5m": transformer_5m,
+    "transformer_bind_match": transformer_bind_match,
+    "recurrent_5m": recurrent_5m,
     "slot_recurrent_5m": slot_recurrent_5m,
     "far2_5m": far2_5m, "far2_full": far2_full,
     "far2_no_adaptive": far2_no_adaptive, "far2_fixed4": far2_fixed4,
@@ -182,8 +191,10 @@ def param_table(preset_names=None) -> str:
     blueprint tables are generated from. CLI: python -m far2.presets --table"""
     from far2.models import build_model
     lines = []
-    for name in preset_names or ["transformer_5m", "recurrent_5m",
-                                 "slot_recurrent_5m", "far2_5m", "far2_full"]:
+    for name in preset_names or ["transformer_5m", "transformer_bind_match",
+                                 "recurrent_5m",
+                                 "slot_recurrent_5m", "far2_5m", "far2_full",
+                                 "far2_bind", "slot_recurrent_bind"]:
         model = build_model(get_preset(name))
         lines.append(f"\n{name}  ·  total {model.param_count():,}")
         for child, module in model.named_children():

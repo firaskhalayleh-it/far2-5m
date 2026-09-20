@@ -3,12 +3,13 @@
 R0  probe_selfcheck(): the pipeline must recover PLANTED slot encodings at
     >95% and score chance on shuffled labels — otherwise the diagnostic, not
     the model, is broken. Runs before any claim.
-R1  pair_value_probe() probes WHERE the information lives: encoder H at the
-    variable's anchor, pooled Z, the bound slot (linear AND nonlinear), and
-    the wrong slot. The pattern is the diagnosis:
-      Case A  H high, pooled high, slots ~ chance  -> known but DISTRIBUTED
-      Case B  H high, pooled low                   -> bottleneck destroys it
-      Case C  H low                                -> upstream encoder problem
+R1  pair_value_probe() probes WHERE the information lives: contextual entity
+    E (when present), legacy encoder H at the variable's first occurrence,
+    pooled Z, the bound slot (linear AND nonlinear), and the wrong slot. The
+    pattern is the diagnosis:
+      Case A  E high, pooled high, slots ~ chance  -> known but DISTRIBUTED
+      Case B  E high, pooled low                   -> bottleneck destroys it
+      Case C  E low                                -> upstream entity problem
       Case D  linear slot low, nonlinear high      -> present, not linear
 R4  the strict gates (bound >= chance+20, bound-wrong >= 15, McNemar) are
     applied by run_probes --strict on the binding substrate.
@@ -97,7 +98,7 @@ def _collect(model, device, family: str, n: int, difficulty: int, T: int,
     gen = ALL_GENERATORS[family]
     rng = random.Random(f"probe:{seed}:{family}:{difficulty}")
     rows = {k: [] for k in ("bound", "wrong_slot", "pooled", "H_anchor")}
-    labels, episode_of = [], []
+    labels, episode_of, entity_head_preds = [], [], []
     n_episodes = 0
     remaining = n
     while remaining > 0:
@@ -111,6 +112,12 @@ def _collect(model, device, family: str, n: int, difficulty: int, T: int,
             raise ValueError("probes need a far2-topology model")
         Zf = tel["Z_final"].cpu()
         Hf = tel["H"].cpu()
+        Ef = tel.get("entity_states")
+        Elf = tel.get("entity_value_logits")
+        if Ef is not None:
+            Ef = Ef.cpu()
+            Elf = Elf.cpu()
+            rows.setdefault("E_entity", [])
         for i, s in enumerate(samples):
             if "pair" not in s.meta or "vars" not in s.meta:
                 continue
@@ -135,17 +142,22 @@ def _collect(model, device, family: str, n: int, difficulty: int, T: int,
                     ((pooled, pooled), "pooled"),
                     ((Hf[i, pos[ta]], Hf[i, pos[tb]]), "H_anchor")):
                 rows[name] += [feat_a, feat_b]
+            if Ef is not None:
+                ia, ib = int(ta[1:]), int(tb[1:])
+                rows["E_entity"] += [Ef[i, ia], Ef[i, ib]]
+                entity_head_preds += [int(Elf[i, ia].argmax()),
+                                      int(Elf[i, ib].argmax())]
             labels += [vals[0], vals[1]]
             episode_of += [n_episodes, n_episodes]
             n_episodes += 1
-    return rows, labels, episode_of, n_episodes
+    return rows, labels, episode_of, n_episodes, entity_head_preds
 
 
 def pair_value_probe(model, device, n: int = 512, difficulty: int = 3,
                      T: int = 8, seed: int = 7,
                      family: str = "symbreak") -> dict:
     """R1 location probes + the separation quantities the gates consume."""
-    rows, labels, episode_of, n_episodes = _collect(
+    rows, labels, episode_of, n_episodes, entity_head_preds = _collect(
         model, device, family, n, difficulty, T, seed)
     if n_episodes < 20:
         return {"n_episodes": n_episodes, "error": "too few probe episodes"}
@@ -165,6 +177,11 @@ def pair_value_probe(model, device, n: int = 512, difficulty: int = 3,
         out[name] = float(correct.float().mean())
         out[f"{name}_k"] = int(correct.sum())
         out[f"{name}_n"] = int(correct.numel())
+    if entity_head_preds:
+        eh = torch.tensor(entity_head_preds)[is_test] == y[is_test]
+        out["E_head"] = float(eh.float().mean())
+        out["E_head_k"] = int(eh.sum())
+        out["E_head_n"] = int(eh.numel())
     # nonlinear probe on the bound slot (Case D detector)
     Xb = torch.stack(rows["bound"]).float()
     scorer = fit_mlp_probe(Xb[~is_test], y[~is_test], N_CLASSES, seed=seed)
@@ -181,9 +198,12 @@ def pair_value_probe(model, device, n: int = 512, difficulty: int = 3,
 
 def _diagnose(r: dict) -> str:
     ch = r["chance"]
-    if r["H_anchor"] < ch + 0.15:
-        return ("Case C: the anchor value is not decodable even from the "
-                "ENCODER — the problem is upstream of the workspace")
+    upstream = r.get("E_head", r.get("E_entity", r["H_anchor"]))
+    source = ("the trained entity head" if "E_head" in r else
+              "contextual entity E" if "E_entity" in r else "legacy H anchor")
+    if upstream < ch + 0.15:
+        return (f"Case C: the value is not decodable from {source} — the "
+                "problem is upstream of the workspace")
     if r["pooled"] < ch + 0.15:
         return ("Case B: encoder knows it, pooled workspace does not — the "
                 "slot bottleneck destroys the information")

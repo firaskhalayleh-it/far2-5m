@@ -137,7 +137,12 @@ def _records(model, out, batch, samples, family, difficulty, T) -> list[dict]:
             elif "cross_attn" in tel:
                 rec["binding"] = _binding(tel["cross_attn"][i],
                                           tel["active_mask"][i], s)
-        iters = rec.get("iters_used", rec["n_iters"]) or model.cfg.n_iters_train
+        # Preserve an explicit zero: v0.4.52 evaluates Z0 before recurrent
+        # computation and its FLOP accounting must not silently charge the
+        # model's default iteration budget.
+        iters = rec.get("iters_used", rec["n_iters"])
+        if iters is None:
+            iters = model.cfg.n_iters_train
         rec["flops"] = model.flops_per_sample(
             len(s.tokens), int(iters), n_ans=n_ans,
             active_slots=rec.get("active_slots"))

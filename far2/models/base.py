@@ -22,11 +22,13 @@ class ReasoningModel(nn.Module):
 
     @abstractmethod
     def forward(self, batch: dict, n_iters: int | None = None,
-                ipt: bool = False, collect: bool = False) -> ModelOutput: ...
+                ipt: bool = False, collect: bool = False,
+                all_cycle_logits: bool = False) -> ModelOutput: ...
 
     @abstractmethod
     def flops_per_sample(self, seq_len: int, n_iters: int,
-                         n_ans: int = 1, active_slots: float | None = None) -> float: ...
+                         n_ans: int = 1, active_slots: float | None = None,
+                         n_decodes: int = 1) -> float: ...
 
     def param_count(self) -> int:
         return sum(p.numel() for p in self.parameters())

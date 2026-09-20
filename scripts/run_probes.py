@@ -4,8 +4,8 @@ R0  probe self-validation on PLANTED synthetic encodings (>95% recovered,
     shuffled labels ~ chance). If R0 fails the instrument is broken and NO
     claim about the model is reported.
 R1  location probes on symbreak pairs — bound slot (linear + nonlinear),
-    wrong slot, pooled Z, encoder H at the variable's anchor — plus the
-    Case A/B/C/D diagnosis of where the value actually lives.
+    wrong slot, pooled Z, contextual entity E, and legacy encoder H at the
+    variable's first occurrence — plus the Case A/B/C/D diagnosis.
 R4  strict binding gates (--strict): bound >= chance + 20pts and
     bound - wrong_slot >= 15pts with exact McNemar. Default gates are the
     softer pre-binding thresholds (10pts) for standard-substrate runs.
@@ -40,9 +40,13 @@ def show(tag: str, r: dict) -> None:
     if "error" in r:
         print(f"  {tag:<10} NOT-TESTABLE: {r['error']} (n={r['n_episodes']})")
         return
+    estr = (f" · E-entity {r['E_entity']:.1%}"
+            if "E_entity" in r else "")
+    ehstr = (f" · E-head {r['E_head']:.1%}" if "E_head" in r else "")
     print(f"  {tag:<10} bound {r['bound']:.1%} (mlp {r['bound_mlp']:.1%}) · "
           f"wrong-slot {r['wrong_slot']:.1%} · pooled {r['pooled']:.1%} · "
-          f"H-anchor {r['H_anchor']:.1%} · chance {r['chance']:.1%} · "
+          f"H-anchor {r['H_anchor']:.1%}{estr}{ehstr} · "
+          f"chance {r['chance']:.1%} · "
           f"separation {r['separation_index']:+.1%} (n={r['n_episodes']} ep)")
     print(f"  {'':<10} R1 diagnosis: {r['diagnosis']}")
 
@@ -53,7 +57,7 @@ def main():
                                             " + R4 binding gates")
     p.add_argument("--run", default="runs/phase3b_adaptive_bind_seed0")
     p.add_argument("--control", default=None,
-                   help="fixed-slot control run dir (e.g. phase3a_fixed16)")
+                   help="fixed-slot control run dir (e.g. phase3a_fixed14)")
     p.add_argument("--family", default="symbreak",
                    help="symbreak, or sym_poly for the transfer-side probe")
     p.add_argument("--n", type=int, default=512)

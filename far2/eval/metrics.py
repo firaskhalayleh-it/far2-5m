@@ -17,6 +17,20 @@ def correct_counts(records, **filters) -> tuple[int, int]:
     return sum(r["correct"] for r in sel), len(sel)
 
 
+def token_accuracy(records, **filters) -> float:
+    """Per-target-token accuracy for readiness diagnostics.
+
+    Exact episode accuracy remains the scientific endpoint.  This continuous
+    companion prevents an eight-answer boundary of 0/0 from being mistaken
+    for evidence about a capacity or operator contrast.
+    """
+    sel = _filter(records, **filters)
+    correct = sum(sum(a == b for a, b in zip(r["pred"], r["target"]))
+                  for r in sel)
+    total = sum(len(r["target"]) for r in sel)
+    return correct / total if total else float("nan")
+
+
 def _filter(records, **filters):
     out = []
     for r in records:
@@ -81,16 +95,20 @@ def split_selectivity(records) -> dict:
 def binding_separation(records) -> dict:
     """Slot<->entity alignment (harness `binding` field): among episodes whose
     task required distinguishing a pair, did distinct slots carry the two
-    entities' evidence — and did that co-occur with SPLIT events?"""
+    entities' evidence — and did that co-occur with SPLIT events? Register
+    ownership is never success: registers are background storage, not concepts.
+    """
     sel = [r for r in records if r.get("binding")]
     if not sel:
         return {"n": 0}
     req = [r for r in sel if r.get("requires_distinction") == 1]
     ctrl = [r for r in sel if r.get("requires_distinction") == 0]
     split = [r for r in req if r.get("split_count", 0) > 0]
-    frac = lambda rs: (sum(r["binding"]["separated"] for r in rs) / len(rs)
+    valid_sep = lambda r: (r["binding"]["separated"]
+                           and not r["binding"].get("in_registers", False))
+    frac = lambda rs: (sum(valid_sep(r) for r in rs) / len(rs)
                        if rs else float("nan"))
-    k = lambda rs: sum(r["binding"]["separated"] for r in rs)
+    k = lambda rs: sum(valid_sep(r) for r in rs)
     return {"n": len(sel),
             "separated_when_required": frac(req),
             "separated_on_control": frac(ctrl),
@@ -99,6 +117,9 @@ def binding_separation(records) -> dict:
             "k_req": k(req), "n_req": len(req),
             "k_ctrl": k(ctrl), "n_ctrl": len(ctrl),
             "k_split": k(split), "n_split": len(split),
+            "register_ownership_rate": (
+                sum(r["binding"].get("in_registers", False) for r in sel)
+                / len(sel)),
             "mean_selectivity": (sum(r["binding"]["selectivity_a"]
                                      + r["binding"]["selectivity_b"]
                                      for r in sel) / (2 * len(sel)))}
@@ -180,8 +201,8 @@ def signal_aurocs(records) -> dict[str, float]:
     # declared-pair ownership overlap: a PROBE, never a selectable signal —
     # computing it requires the episode's ground-truth pair, which a free
     # controller does not have (review #3). The runtime-legitimate binding
-    # candidate is the SEARCHED max-over-pairs collision, which reaches this
-    # tournament as the "bind" key of signals/signals_pre.
+    # candidate is the SEARCHED max-over-input-derived-relations collision,
+    # which reaches this tournament as the "bind" key of signals/signals_pre.
     withb = [r for r in sel if r.get("binding", {}).get("overlap") is not None]
     if len(withb) >= 20:
         out["bind_overlap_probe"] = auroc(
