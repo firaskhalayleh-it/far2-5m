@@ -135,6 +135,9 @@ def main():
                    help="default: runs_v0452/foundation_curve_seed<seed>")
     p.add_argument("--arms", default="",
                    help="comma-separated arm names; empty runs every declared arm")
+    p.add_argument("--bind-norm", default="softmax", choices=("softmax", "capped"),
+                   help="ownership law for every binding-substrate arm (FAR2 and "
+                        "the slot-recurrent control alike); recorded in the contract")
     args = p.parse_args()
     if args.out is None:
         args.out = f"runs_v0452/foundation_curve_seed{args.seed}"
@@ -143,13 +146,15 @@ def main():
     # Preserve every FAR2-bind module for the parameter-identity contract.
     # The empty stage unlock set makes all optional mechanisms behaviorally
     # inert without deleting their parameters.
-    base = replace(get_preset("far2_bind"), n_iters_train=8, init_slots=14)
+    base = replace(get_preset("far2_bind"), n_iters_train=8, init_slots=14,
+                   bind_norm=args.bind_norm)
     arms = {
         "far2_fixed14_warm": (replace(base, workspace_init="input"), 0.0, "final"),
         "far2_fixed14_seed": (replace(base, workspace_init="learned"), 0.0, "final"),
         "far2_fixed14_warm_all": (replace(base, workspace_init="input"), 0.5, "all"),
         "slot_recurrent_bind": (replace(get_preset("slot_recurrent_bind"),
-                                         workspace_init="input"), 0.0, "final"),
+                                         workspace_init="input",
+                                         bind_norm=args.bind_norm), 0.0, "final"),
         "transformer_5m": (get_preset("transformer_5m"), 0.0, "final"),
         "transformer_bind_match": (get_preset("transformer_bind_match"), 0.0, "final"),
     }
@@ -171,6 +176,7 @@ def main():
         "recurrence_margin": RECURRENCE_MARGIN,
         "bind_weight": 0.0, "oracle_weight": 0.0,
         "operator_unlocks": [], "no_transfer_training": True,
+        "bind_norm": args.bind_norm,
     }, "arm_contracts": {}, "arms": {}, "initialization_replays": {}}
     for name, (cfg, ipt_alpha, supervision) in arms.items():
         run_dir = os.path.join(args.out, name)

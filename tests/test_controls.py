@@ -204,6 +204,64 @@ def test_bind_matrix_is_ownership_distribution():
     assert tel["n_registers"] == m.cfg.n_registers == 2
 
 
+def test_capped_ownership_is_flagged_parameter_free_and_limits_slot_mass():
+    base = get_preset("far2_tiny_bind")
+    assert base.bind_norm == "softmax", "the default ownership law must not change"
+    torch.manual_seed(0)
+    plain = build_model(base)
+    capped = build_model(replace(base, bind_norm="capped"))
+    assert capped.param_count() == plain.param_count()
+    capped.load_state_dict(plain.state_dict())
+
+    d, S = base.d_model, base.max_slots
+    E, Z = torch.randn(3, 16, d) * 4, torch.randn(3, S, d) * 4
+    active = torch.ones(3, S)
+    active[:, -1] = 0                             # 7 slots x 2 = 14 units of room
+    present = torch.ones(3, 16, dtype=torch.bool)
+    present[:, 9:] = False                        # 9 variables: the real 24:16 slack
+    with torch.no_grad():
+        soft = plain._bind_matrix(E, Z, active, None, present)
+        cap = capped._bind_matrix(E, Z, active, None, present)
+    # the default path ignores `present` and is the historical softmax
+    assert torch.equal(soft, plain._bind_matrix(E, Z, active))
+    for Bm in (soft, cap):
+        assert torch.allclose(Bm.sum(-1), torch.ones(3, 16), atol=1e-4)
+        assert float((Bm * (1 - active[:, None, :])).sum()) < 1e-4
+    held = lambda Bm: (Bm * present[:, :, None]).sum(1).max()      # noqa: E731
+    assert held(soft) > 2.7, "fixture must actually pile variables into one slot"
+    # the default sweep count must make the cap HOLD even on sharp scores; a
+    # hasty cap sheds only part of the pile-up (it let training collapse again)
+    assert held(cap) < base.bind_capacity + 0.15
+    hasty = build_model(replace(base, bind_norm="capped", bind_sweeps=2))
+    hasty.load_state_dict(plain.state_dict())
+    with torch.no_grad():
+        assert held(hasty._bind_matrix(E, Z, active, None, present)) > held(cap)
+    # more variables than capacity: the cap cannot hold, so load is balanced
+    # instead and every variable still owns exactly one unit
+    few = torch.zeros(3, S)
+    few[:, :4] = 1                                # 4 x 2 < 12
+    with torch.no_grad():
+        tight = capped._bind_matrix(E, Z, few, None, present)
+    assert torch.allclose(tight.sum(-1), torch.ones(3, 16), atol=1e-4)
+    assert held(tight) < held(plain._bind_matrix(E, Z, few))
+    # the cap is differentiable through the same two paths as the softmax
+    capped.train()
+    Bm = capped._bind_matrix(E.requires_grad_(), Z.requires_grad_(), active, None, present)
+    Bm[:, :, 0].sum().backward()
+    assert E.grad.abs().sum() > 0 and Z.grad.abs().sum() > 0
+
+
+def test_capped_ownership_runs_end_to_end():
+    m = build_model(replace(get_preset("far2_tiny_bind"), bind_norm="capped"))
+    m.set_unlocked(set())
+    m.eval()
+    with torch.no_grad():
+        tel = m(symbreak_batch(), n_iters=4, collect=True).telemetry
+    B_mat = tel["bind_matrix"]
+    assert torch.allclose(B_mat.sum(-1), torch.ones(B_mat.shape[:2]), atol=1e-4)
+    assert float((B_mat * (1 - tel["active_mask"][:, None, :])).sum()) < 1e-4
+
+
 def test_registers_always_active_no_actions():
     m = build_model(get_preset("far2_tiny_bind"))
     m.set_unlocked(set())
@@ -275,3 +333,72 @@ def test_epistemic_shuffled_control_trains(tmp_path):
                     unlocked={"epistemic"})]
     t = Trainer(build_model(mc), mc, tc, stages)
     t.train()
+
+
+# ---- encoder variants (flags; defaults unchanged) ---------------------------
+def test_encoder_variants_are_flagged_and_syntax_only():
+    base = get_preset("far2_tiny_bind")
+    assert base.enc_pos == "absolute" and base.enc_clause_roles is False
+    plain = build_model(base)
+    rope = build_model(replace(base, enc_pos="rope"))
+    assert rope.param_count() == plain.param_count(), "rotary positions add no weights"
+    roles = build_model(replace(base, enc_clause_roles=True))
+    batch = symbreak_batch()
+    for m in (rope, roles):
+        m.set_unlocked(set())
+        m.eval()
+        with torch.no_grad():
+            assert torch.isfinite(m(batch, n_iters=2).logits).all()
+    # clause features depend on token ids only: identical rows -> identical features
+    ids = batch["input_ids"]
+    feats = roles._clause_roles(ids)
+    assert torch.equal(feats[0], roles._clause_roles(ids[:1])[0])
+    # rotary encoding is relative: shifting every position leaves q.k unchanged
+    from far2.models.layers import apply_rope, rope_tables
+    cos, sin = rope_tables(12, 16, "cpu")
+    q, k = torch.randn(1, 1, 1, 16), torch.randn(1, 1, 1, 16)
+    def dot(i, j):
+        qi = apply_rope(q.expand(1, 1, 12, 16), cos, sin)[..., i, :]
+        kj = apply_rope(k.expand(1, 1, 12, 16), cos, sin)[..., j, :]
+        return float((qi * kj).sum())
+    assert abs(dot(3, 4) - dot(7, 8)) < 1e-4
+
+
+def test_slot_query_entities_starts_inert_and_only_steers_attention():
+    base = replace(get_preset("far2_tiny_bind"), bind_norm="capped")
+    torch.manual_seed(0)
+    plain = build_model(base)
+    routed = build_model(replace(base, slot_query_entities=True))
+    routed.load_state_dict(plain.state_dict(), strict=False)
+    for m in (plain, routed):
+        m.set_unlocked(set())
+        m.eval()
+    batch = symbreak_batch()
+    with torch.no_grad():
+        assert torch.allclose(plain(batch, n_iters=3).logits,
+                              routed(batch, n_iters=3).logits, atol=1e-5)
+    # the entity vector may only reach the query projection of the cross-attention
+    assert routed.param_count() - plain.param_count() == base.d_model ** 2
+    import inspect
+    src = inspect.getsource(type(routed).forward)
+    assert "ent_q = self.slot_query_entity(" in src and "q_in = q_in + ent_q" in src
+    assert src.count("slot_query_entity(") == 1
+
+
+def test_clause_read_pools_rows_and_runs():
+    base = replace(get_preset("far2_tiny_bind"), bind_norm="capped",
+                   slot_read_clauses=True, slot_query_entities=True)
+    m = build_model(base)
+    m.set_unlocked(set())
+    m.eval()
+    batch = symbreak_batch()
+    with torch.no_grad():
+        H, _ = m._encode(batch)
+        mem, mask = m._clause_memory(H, batch)
+        tel = m(batch, n_iters=3, collect=True).telemetry
+    ids = batch["input_ids"][0]
+    seg = m.clause_sep_ids[ids].long().cumsum(0)
+    keep = batch["pad_mask"][0]
+    c = int(seg[keep][5])
+    assert torch.allclose(mem[0, c], H[0][(seg == c) & keep].mean(0), atol=1e-5)
+    assert torch.allclose(tel["clause_attn"].sum(-1), torch.ones_like(tel["clause_attn"].sum(-1)), atol=1e-4)
