@@ -1,0 +1,71 @@
+{
+  "commit": "c188495eced4bb47ff6e50d20fcc190e4874208b",
+  "branch": "exp/binding-memory",
+  "research_tree_dirty": false,
+  "dirty_files": [],
+  "command": [
+    "diagnostics/measure.sh",
+    "bm_structural",
+    "0"
+  ],
+  "env": {},
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "started": "2026-09-25T21:00:09+0300",
+  "duration_min": 13.0,
+  "metrics": {
+    "exact_T8": 0.0,
+    "symmetric_T8": 26.3,
+    "broken_T8": 10.9,
+    "curve": {
+      "0": {
+        "exact": 0.0,
+        "symmetric": 25.7,
+        "broken": 10.2
+      },
+      "1": {
+        "exact": 0.0,
+        "symmetric": 3.8,
+        "broken": 6.3
+      },
+      "2": {
+        "exact": 0.0,
+        "symmetric": 26.3,
+        "broken": 10.9
+      },
+      "4": {
+        "exact": 0.0,
+        "symmetric": 26.3,
+        "broken": 10.9
+      },
+      "8": {
+        "exact": 0.0,
+        "symmetric": 26.3,
+        "broken": 10.9
+      },
+      "12": {
+        "exact": 0.0,
+        "symmetric": 26.3,
+        "broken": 10.9
+      },
+      "16": {
+        "exact": 0.0,
+        "symmetric": 26.3,
+        "broken": 10.9
+      },
+      "32": {
+        "exact": 0.0,
+        "symmetric": 9.9,
+        "broken": 9.2
+      }
+    },
+    "correct": 10.9,
+    "partner": 10.2,
+    "half_sum": 9.8,
+    "other_pair": 60.4,
+    "arithmetic": 8.6,
+    "selection": 51.5,
+    "probe_slot_order": 55.3,
+    "probe_sum10": 64.9,
+    "probe_hint_left": 100.0
+  }
+}

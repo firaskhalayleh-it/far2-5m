@@ -455,3 +455,27 @@ def test_binding_memory_default_off_leaves_model_unchanged():
     torch.manual_seed(0)
     b = build_model(replace(base, bind_memory_roles="identity"))
     assert a.param_count() == b.param_count()
+
+
+def test_binding_memory_write_is_exact_and_stays_bounded_with_correlated_keys():
+    m = build_model(_bm_cfg("identity"))
+    torch.manual_seed(0)
+    B, V, r, d = 2, 16, m.cfg.bind_memory_dim, m.cfg.d_model
+    base = torch.randn(1, 1, r)
+    key = torch.nn.functional.normalize(base + 0.6 * torch.randn(B, V, r), dim=-1)  # mean |cos| ~0.7
+    present = torch.ones(B, V, dtype=torch.bool)
+    present[:, 12:] = False
+    role = torch.randn(B, V, d)
+    with torch.no_grad():
+        m.bm_rate.fill_(20.0)                              # sigmoid ~ 1: exact write
+        M = torch.zeros(B, r, d)
+        norms = []
+        for _ in range(30):
+            Z = torch.randn(B, m.cfg.max_slots, d)
+            B_mat = torch.softmax(torch.randn(B, V, m.cfg.max_slots), -1)
+            M = m._bm_write(M, Z, B_mat, role, key, present)
+            norms.append(float(M.norm()))
+        own = B_mat @ m.bm_ln(Z)
+        fill = m.bm_fill(torch.cat([own, role], dim=-1))
+    assert torch.allclose((key @ M)[present], fill[present], atol=1e-2), "a present key reads its filler"
+    assert max(norms) < 50 * norms[0], "the write must not diverge"

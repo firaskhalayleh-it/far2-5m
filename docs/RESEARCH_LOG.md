@@ -39,3 +39,14 @@ Baseline capped seeds 0/1: exact 41.1/31.3, broken 29.7/27.1, selection 50.3/52.
 
 Next: binding memory (per-variable write/read), pre-registered in
 `diagnostics/PREREGISTERED_binding_memory.md`.
+
+## 2026-09-25 — binding memory, first run: write-rule bug (not evidence)
+`bm_structural` seed 0 at commit c188495: exact 0.0%, symmetric 26.3%, broken 10.9%,
+other-pair 60.4%; loss matched the route arm to step 200, then rose (1.70 → 2.04) and
+ended at 1.58 vs 0.83. Debug (`diagnostics/debug_binding_memory.py`): memory norm grew
+~7x per write (52 → 3.8e8 over 9 writes); keys had mean |cos| 0.5, so the batched delta
+rule's step 0.88 × λmax(KKᵀ) ≈ 8.5 was far past the stability limit of 2; reads were
+equally similar to every variable's filler and fillers collapsed (cos 0.99). Fix: exact
+projection write M ← M + η Kᵀ(KKᵀ+εI)⁻¹(F − KM), contractive for η ∈ (0, 2]. The run is
+kept as `diagnostics/results/bm_structural_seed0_delta-rule-diverged.*`; the
+pre-registration is unchanged and applies to the rerun.

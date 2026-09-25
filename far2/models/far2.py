@@ -48,6 +48,7 @@ CLAUSE_SEPARATORS = ("BOS", "CTX", "SEP", "Q")
 CLAUSE_OPERATORS = ("PLUS", "MINUS", "TIMES", "DIV", "POW", "EQ", "GEQ",
                     "LEQ", "NEQ", "SQRT", "MOD")
 CLAUSE_POS_MAX = 15
+BM_EPS = 1e-3
 CONTINUE, RECONSIDER, HALT = 0, 1, 2
 
 
@@ -318,14 +319,24 @@ class FAR2Model(ReasoningModel):
         return role, F.normalize(self.bm_key(role), dim=-1)
 
     def _bm_write(self, M, Z, B_mat, role, key, present):
-        """Delta-rule write: each present variable binds the filler computed
-        from its owner slot's content and its role; earlier writes for the same
-        key are corrected, so the memory accumulates across iterations."""
+        """Projection write: each present variable binds the filler computed
+        from its owner slot's content and its role.
+
+        M <- M + rate * K^T (K K^T + eps I)^-1 (F - K M).  With rate 1 every
+        present key reads back exactly its filler even when keys are
+        correlated, and the update is contractive for rate in (0, 2].  (A plain
+        batched delta rule, M += rate K^T (F - K M), diverges once
+        rate * lambda_max(K K^T) > 2: with 16 keys at mean cosine 0.5 the
+        memory grew ~7x per write.)  Earlier writes for the same key are
+        corrected, so the memory accumulates across iterations."""
         own = B_mat @ self.bm_ln(Z)                                          # [B,V,d]
         fill = self.bm_fill(torch.cat([own, role], dim=-1))
-        pred = key @ M                                                       # [B,V,d]
-        upd = (fill - pred) * present[..., None].to(fill.dtype)
-        return M + torch.sigmoid(self.bm_rate) * key.transpose(1, 2) @ upd
+        p = present[..., None].to(fill.dtype)
+        K = key * p                                                          # absent rows -> 0
+        resid = (fill - K @ M) * p
+        gram = K @ K.transpose(1, 2) + BM_EPS * torch.eye(K.shape[1], device=K.device, dtype=K.dtype)
+        coef = torch.linalg.solve(gram.float(), resid.float()).to(fill.dtype)
+        return M + torch.sigmoid(self.bm_rate) * K.transpose(1, 2) @ coef
 
     def _bm_answer(self, M, key, batch):
         qv = batch["answer_query_vars"]

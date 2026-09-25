@@ -1,0 +1,35 @@
+trained bm_structural seed 0: 1000 updates in 11.3 min (6,600,930 params)
+[seeds/bm_structural_seed0 @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |   0.0%     25.7%   10.2%
+   1 |   0.0%      3.8%    6.3%
+   2 |   0.0%     26.3%   10.9%
+   4 |   0.0%     26.3%   10.9%
+   8 |   0.0%     26.3%   10.9%
+  12 |   0.0%     26.3%   10.9%
+  16 |   0.0%     26.3%   10.9%
+  32 |   0.0%      9.9%    9.2%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         10.9%
+  partner (selection)             10.2%
+  half-sum (treated symmetric)     9.8%
+  other pair (binding)            60.4%
+  none (arithmetic)                8.6%
+  roots found (correct + partner):   21.1%
+  selection correct/(correct+partner):   51.5%
+broken accuracy by number of broken pairs R: R=1: 12.4%  R=2: 10.1%  R=4: 10.9%
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 64.9%  (majority 56.3%)
+ordering bit from owner slot (T=8):            55.3%  (majority 50.1%)
+ordering bit from entity state E_first:        100.0%
+ordering bit from entity state E_second:       99.7%
+ordering bit from E_first - E_second:          100.0%
+'sum >= 10' from E_first (upstream sanity):    57.5%
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 100.0%
+H at that row's GEQ token  -> 'pair's first var is left': 99.9%
+H at the hint-row var token -> 'pair's first var is left': 57.9%
+H at its sum/product-row tokens    -> 'left of GEQ': 50.9%
+[seeds/bm_structural_seed0] intact workspace:            exact  0.0% symmetric 26.1% broken 11.6%
+[seeds/bm_structural_seed0] workspace from another episode: exact  0.0% symmetric  8.9% broken 10.1%
