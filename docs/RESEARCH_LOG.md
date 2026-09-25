@@ -50,3 +50,16 @@ equally similar to every variable's filler and fillers collapsed (cos 0.99). Fix
 projection write M ← M + η Kᵀ(KKᵀ+εI)⁻¹(F − KM), contractive for η ∈ (0, 2]. The run is
 kept as `diagnostics/results/bm_structural_seed0_delta-rule-diverged.*`; the
 pre-registration is unchanged and applies to the rerun.
+
+## 2026-09-25 — binding memory rerun (commit 6c8ddfd): selection above chance, binding broken
+`bm_structural` seed 0 vs route seed 0, against `diagnostics/PREREGISTERED_binding_memory.md`:
+selection **71.6%** (P1 ≥65 PASS; first arm above chance, all earlier 50–54), workspace
+shuffle → broken 9.2%, symmetric 10.1% (P4 PASS), broken 28.2% (P2 FAIL), exact 3.1%
+(P3 FAIL), T0→T8 +1.8 (P5 FAIL), symmetric 76.2% (guard FAIL), other-pair 38.0% (guard
+FAIL), roots found 39.5% (route 79.3). Memory healthy: read vs own filler cos 1.000
+(0.46 to others), norm flat ~260. Keys built from structural roles are near-collinear
+(mean |cos| 0.73, max 0.96), making the exact write ill-conditioned; likely cause of the
+cross-pair leakage. Verdict: the structural role fixes selection, this memory design
+breaks binding. Next (to pre-register): keys from identity only with the structural
+role in the filler; and an ablation giving the structural role to the route decoder
+query without any memory.
