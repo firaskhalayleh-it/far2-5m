@@ -8,8 +8,9 @@ set -o pipefail
 cd "${0:A:h}/.." || exit 1
 A=$1; S=$2; R=seeds/${A}_seed$S; RUN=runs_diag/$R
 P=.venv/bin/python; D=diagnostics
-if [[ -n "$(git status --porcelain -- far2 scripts diagnostics tests)" && "$FAR2_ALLOW_DIRTY" != 1 ]]; then
-  echo "refusing: uncommitted research changes (commit first, or FAR2_ALLOW_DIRTY=1)"; git status --short -- far2 scripts diagnostics tests; exit 2
+DIRTY=$($P $D/run_manifest.py dirty)
+if [[ -n "$DIRTY" && "$FAR2_ALLOW_DIRTY" != 1 ]]; then
+  echo "refusing: uncommitted research changes (commit first, or FAR2_ALLOW_DIRTY=1)"; echo "$DIRTY"; exit 2
 fi
 mkdir -p $RUN runs_diag/seeds $D/results
 $P $D/run_manifest.py start $RUN -- $D/measure.sh $A $S

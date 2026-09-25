@@ -16,7 +16,12 @@ def git(*args):
 
 
 def research_dirty():
-    return git("status", "--porcelain", "--", *RESEARCH_PATHS)
+    """Tracked changes anywhere in the research paths, plus untracked files in
+    far2/ and diagnostics/ (scripts/ and tests/ also hold shelved-track files
+    that are deliberately untracked)."""
+    tracked = git("status", "--porcelain", "--untracked-files=no", "--", *RESEARCH_PATHS)
+    untracked = git("status", "--porcelain", "--", "far2", "diagnostics")
+    return "\n".join(x for x in (tracked, untracked) if x)
 
 
 def parse_metrics(text):
@@ -41,6 +46,9 @@ def parse_metrics(text):
 
 
 if __name__ == "__main__":
+    if sys.argv[1] == "dirty":
+        print(research_dirty())
+        sys.exit(0)
     mode, run_dir = sys.argv[1], sys.argv[2]
     os.makedirs(run_dir, exist_ok=True)
     path = os.path.join(run_dir, "run_manifest.json")
