@@ -27,7 +27,11 @@ cfg = {"capped": replace(far2, bind_norm="capped", bind_sweeps=32),
        # upper bound: SPLIT forced by the task condition on each broken pair
        "route_oracle_split": replace(far2, init_slots=8, bind_norm="capped", bind_sweeps=32,
                                      enc_local_mix=True, enc_qk_norm=True, slot_query_entities=True,
-                                     repr_policy="oracle", oracle_action="split")}[arm]
+                                     repr_policy="oracle", oracle_action="split"),
+       "bm_identity": replace(far2, bind_norm="capped", bind_sweeps=32, enc_local_mix=True, enc_qk_norm=True,
+                              slot_query_entities=True, bind_memory=True, bind_memory_roles="identity"),
+       "bm_structural": replace(far2, bind_norm="capped", bind_sweeps=32, enc_local_mix=True, enc_qk_norm=True,
+                                slot_query_entities=True, bind_memory=True, bind_memory_roles="structural")}[arm]
 out = os.path.join(r.RUNS, f"seeds/{arm}_seed{seed}"); os.makedirs(out, exist_ok=True)
 tc = TrainConfig(steps=4000, batch_size=128, device="mps", seed=seed, out_dir=out, warmup=266, ema=0.999,
                  ipt_alpha=0.0, cycle_supervision="final", checkpoint_steps=r.POINTS, log_every=50)

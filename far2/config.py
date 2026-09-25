@@ -53,6 +53,16 @@ class ModelConfig:
                                       #   tokens, so a row the loss does not yet
                                       #   use is not starved by the softmax.
                                       #   Values are pooled H only.
+    bind_memory: bool = False         # answers are read from a role-keyed
+                                      #   fast-weight memory the workspace
+                                      #   writes every iteration (delta rule):
+                                      #   filler = f(owner-slot content, role)
+    bind_memory_roles: str = "structural"  # identity: the variable id only |
+                                      #   structural: id + one feature per
+                                      #   occurrence for (clause operator,
+                                      #   operand position), from token ids only
+                                      #   (no digits, no encoder state)
+    bind_memory_dim: int = 64         # role/key width
     slot_query_entities: bool = False  # binding substrate: each slot's
                                       #   cross-attention QUERY adds a zero-init
                                       #   projection of the entity states it

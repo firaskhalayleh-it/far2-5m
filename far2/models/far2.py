@@ -121,20 +121,37 @@ class FAR2Model(ReasoningModel):
         self.enc_ln = nn.LayerNorm(d)
         self.local_mix = LocalMix(d) if cfg.enc_local_mix else None
         assert cfg.enc_pos in ("absolute", "rope")
+        is_sep = torch.zeros(cfg.vocab_size, dtype=torch.bool)
+        is_op = torch.zeros(cfg.vocab_size, dtype=torch.bool)
+        for name in CLAUSE_SEPARATORS:
+            is_sep[VOCAB.t(name)] = True
+        for name in CLAUSE_OPERATORS:
+            is_op[VOCAB.t(name)] = True
+        self.register_buffer("is_clause_sep", is_sep, persistent=False)
+        self.register_buffer("is_clause_op", is_op, persistent=False)
         if cfg.enc_clause_roles:
             # Token ids alone decide both features; no values or labels.
             self.clause_pos = nn.Embedding(CLAUSE_POS_MAX + 1, d)
             self.clause_op = nn.Embedding(cfg.vocab_size, d)
             nn.init.normal_(self.clause_pos.weight, std=0.02)
             nn.init.normal_(self.clause_op.weight, std=0.02)
-            is_sep = torch.zeros(cfg.vocab_size, dtype=torch.bool)
-            is_op = torch.zeros(cfg.vocab_size, dtype=torch.bool)
-            for name in CLAUSE_SEPARATORS:
-                is_sep[VOCAB.t(name)] = True
-            for name in CLAUSE_OPERATORS:
-                is_op[VOCAB.t(name)] = True
-            self.register_buffer("is_clause_sep", is_sep, persistent=False)
-            self.register_buffer("is_clause_op", is_op, persistent=False)
+        if cfg.bind_memory:
+            assert cfg.binding, "bind_memory needs the binding substrate"
+            assert cfg.bind_memory_roles in ("identity", "structural")
+            r = cfg.bind_memory_dim
+            self.bm_var = nn.Embedding(N_VARS, r)
+            if cfg.bind_memory_roles == "structural":
+                # one row per (operator, operand position): "(GEQ, 1)" is a
+                # single feature, so which operand of which relation a
+                # variable is stays bound together
+                self.bm_occ = nn.Embedding(cfg.vocab_size * (CLAUSE_POS_MAX + 1), r)
+            # unit-scale rows: keys must start nearly orthogonal, or every
+            # variable writes to the same memory direction (cos 0.997 at 0.02)
+            self.bm_role = nn.Sequential(nn.Linear(r, d), nn.GELU(), nn.Linear(d, d))
+            self.bm_key = nn.Linear(d, r, bias=False)
+            self.bm_ln = nn.LayerNorm(d)
+            self.bm_fill = nn.Sequential(nn.Linear(2 * d, d), nn.GELU(), nn.Linear(d, d))
+            self.bm_rate = nn.Parameter(torch.tensor(2.0))      # sigmoid -> ~0.88
 
         # ② slot seeds (+ fixed unit directions for deterministic eval-time SPLIT)
         self.seeds = nn.Parameter(torch.randn(S, d) * 0.02)
@@ -262,6 +279,59 @@ class FAR2Model(ReasoningModel):
         mem = pooled / count.clamp_min(1.0)[..., None]
         mask = torch.where(count > 0, 0.0, MASK_FILL)[:, None, None, :]
         return mem, mask
+
+    def _clause_syntax(self, ids):
+        """Per token: offset within its clause, the clause's first relation
+        operator id, and whether it has one.  Token ids only."""
+        B, L = ids.shape
+        ar = torch.arange(L, device=ids.device).expand(B, L)
+        sep = self.is_clause_sep[ids]
+        start = torch.cummax(torch.where(sep, ar, torch.zeros_like(ar)), dim=1).values
+        offset = (ar - start).clamp_max(CLAUSE_POS_MAX)
+        seg = sep.long().cumsum(1)
+        op_pos = torch.where(self.is_clause_op[ids], ar, torch.full_like(ar, L))
+        first = torch.full((B, L + 1), L, dtype=torch.long, device=ids.device)
+        first = first.scatter_reduce(1, seg, op_pos, reduce="amin")
+        pos = first.gather(1, seg)
+        return offset, ids.gather(1, pos.clamp_max(L - 1)), pos < L
+
+    def _bm_roles(self, batch):
+        """Role vectors [B,V,d] and keys [B,V,r].  identity: the variable id.
+        structural: id + mean over the variable's occurrences BEFORE Q of one
+        embedding per (clause operator, operand position).  Built from token
+        ids alone, so a role can say "operand 1 of a GEQ row" but never
+        carries a number."""
+        e = self.bm_var.weight[None].expand(batch["input_ids"].shape[0], -1, -1)
+        if self.cfg.bind_memory_roles == "structural":
+            ids = batch["input_ids"]
+            B, L = ids.shape
+            offset, op_id, has_op = self._clause_syntax(ids)
+            code = op_id * (CLAUSE_POS_MAX + 1) + offset
+            occ_vec = self.bm_occ(code) * has_op[..., None]                    # [B,L,r]
+            is_q = ids == VOCAB.t("Q")
+            q_pos = torch.where(is_q.any(1), is_q.float().argmax(1),
+                                torch.full((B,), L, device=ids.device, dtype=torch.long))
+            before_q = torch.arange(L, device=ids.device)[None] < q_pos[:, None]
+            occ = (batch["var_occurrence"] & before_q[:, None, :]).to(occ_vec.dtype)
+            e = e + (occ @ occ_vec) / occ.sum(-1, keepdim=True).clamp_min(1.0)
+        role = self.bm_role(e)
+        return role, F.normalize(self.bm_key(role), dim=-1)
+
+    def _bm_write(self, M, Z, B_mat, role, key, present):
+        """Delta-rule write: each present variable binds the filler computed
+        from its owner slot's content and its role; earlier writes for the same
+        key are corrected, so the memory accumulates across iterations."""
+        own = B_mat @ self.bm_ln(Z)                                          # [B,V,d]
+        fill = self.bm_fill(torch.cat([own, role], dim=-1))
+        pred = key @ M                                                       # [B,V,d]
+        upd = (fill - pred) * present[..., None].to(fill.dtype)
+        return M + torch.sigmoid(self.bm_rate) * key.transpose(1, 2) @ upd
+
+    def _bm_answer(self, M, key, batch):
+        qv = batch["answer_query_vars"]
+        valid = qv >= 0
+        k = key.gather(1, qv.clamp_min(0)[..., None].expand(-1, -1, key.shape[-1]))
+        return None, valid, k @ M
 
     def _clause_roles(self, ids):
         """Offset within the clause and the clause's first relation operator.
@@ -432,8 +502,9 @@ class FAR2Model(ReasoningModel):
             mask = F.pad(mask, (0, 1))                # goal token always visible
         a, _ = self.dec_cross(self.ln_q(Q), kv, mask)
         if answer_binding is not None:
-            weights, valid = answer_binding
-            routed = weights @ self.dec_kv_ln(Z)
+            weights, valid = answer_binding[:2]
+            routed = (answer_binding[2] if len(answer_binding) > 2
+                      else weights @ self.dec_kv_ln(Z))
             a = torch.where(valid[..., None], routed, a)
         x = Q + a
         x = x + self.dec_mlp(self.ln_d2(x))
@@ -613,6 +684,14 @@ class FAR2Model(ReasoningModel):
         acted = torch.zeros(B, device=dev)
         C_max_pre = torch.zeros(B, device=dev)
         sig_pre: dict = {}
+
+        bm_M = bm_role = bm_key = None
+        if cfg.bind_memory:
+            bm_role, bm_key = self._bm_roles(batch)
+            bm_M = H.new_zeros(B, cfg.bind_memory_dim, cfg.d_model)
+            bm_B = self._bind_matrix(entity_states, Z, active * (1 - reg_mask)[None],
+                                     ownership_bias, entity_present)
+            bm_M = self._bm_write(bm_M, Z, bm_B, bm_role, bm_key, entity_present)
 
         for t in range(T):
             Z_prev = Z
@@ -972,6 +1051,10 @@ class FAR2Model(ReasoningModel):
                     entity_states, Z, active * (1 - reg_mask)[None],
                     ownership_bias, entity_present)
                 decode_binding = self._answer_binding(decode_B, batch)
+                if cfg.bind_memory:
+                    bm_M = self._bm_write(bm_M, Z, decode_B, bm_role, bm_key,
+                                          entity_present)
+                    decode_binding = self._bm_answer(bm_M, bm_key, batch)
             if collect:
                 with torch.no_grad():
                     probe_preds.append(self._decode(
@@ -993,6 +1076,9 @@ class FAR2Model(ReasoningModel):
             B_mat = self._bind_matrix(entity_states, Z, act_pair,
                                       ownership_bias, entity_present)
             answer_binding = self._answer_binding(B_mat, batch)
+            if cfg.bind_memory:
+                # the loop already wrote the final state; T=0 reads the initial write
+                answer_binding = self._bm_answer(bm_M, bm_key, batch)
         logits = self._decode(Q, Z, active, g_tok, answer_binding)
 
         # ⑧ OPERATIONAL epistemic decision (review #3): the answer-level head

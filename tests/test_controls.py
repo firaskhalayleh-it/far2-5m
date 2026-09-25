@@ -402,3 +402,56 @@ def test_clause_read_pools_rows_and_runs():
     c = int(seg[keep][5])
     assert torch.allclose(mem[0, c], H[0][(seg == c) & keep].mean(0), atol=1e-5)
     assert torch.allclose(tel["clause_attn"].sum(-1), torch.ones_like(tel["clause_attn"].sum(-1)), atol=1e-4)
+
+
+# ---- binding memory ---------------------------------------------------------
+def _bm_cfg(roles):
+    return replace(get_preset("far2_tiny_bind"), bind_norm="capped",
+                   bind_memory=True, bind_memory_roles=roles)
+
+
+def test_binding_memory_roles_carry_syntax_never_numbers():
+    m = build_model(_bm_cfg("structural"))
+    rng = random.Random(5)
+    s = GENERATORS["symbreak"].sample(rng, 2)
+    twin = replace(s, tokens=[("D" + str((int(t[1:]) + 3) % 10)) if t.startswith("D") and t[1:].isdigit()
+                              else t for t in s.tokens])
+    assert twin.tokens != s.tokens
+    with torch.no_grad():
+        r1, k1 = m._bm_roles(collate([s]))
+        r2, k2 = m._bm_roles(collate([twin]))
+    assert torch.equal(r1, r2) and torch.equal(k1, k2), "roles must not see digits"
+    ident = build_model(_bm_cfg("identity"))
+    with torch.no_grad():
+        a, _ = ident._bm_roles(collate([s]))
+        b, _ = ident._bm_roles(collate([GENERATORS["symbreak"].sample(rng, 4)]))
+    assert torch.equal(a, b), "identity roles depend on the variable id only"
+
+
+def test_binding_memory_runs_all_depths_and_reads_what_was_written():
+    for roles in ("identity", "structural"):
+        m = build_model(_bm_cfg(roles))
+        m.set_unlocked(set())
+        m.eval()
+        batch = symbreak_batch()
+        with torch.no_grad():
+            for T in (0, 1, 4):
+                assert torch.isfinite(m(batch, n_iters=T).logits).all()
+    # delta rule with orthonormal keys: after one write the read returns rate*filler
+    B, V, r, d = 1, 3, 4, 5
+    key = torch.eye(r)[:V][None]
+    fill = torch.randn(B, V, d)
+    M = torch.zeros(B, r, d)
+    upd = (fill - key @ M)
+    M = M + 0.5 * key.transpose(1, 2) @ upd
+    assert torch.allclose(key @ M, 0.5 * fill)
+
+
+def test_binding_memory_default_off_leaves_model_unchanged():
+    base = get_preset("far2_tiny_bind")
+    assert base.bind_memory is False
+    torch.manual_seed(0)
+    a = build_model(base)
+    torch.manual_seed(0)
+    b = build_model(replace(base, bind_memory_roles="identity"))
+    assert a.param_count() == b.param_count()

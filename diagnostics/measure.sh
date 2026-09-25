@@ -16,7 +16,8 @@ mkdir -p $RUN runs_diag/seeds $D/results
 $P $D/run_manifest.py start $RUN -- $D/measure.sh $A $S
 LOG=runs_diag/seeds/${A}_seed$S.log
 { $P $D/train_seed.py $A $S && $P $D/analyze_broken.py $R 1000 \
-  && $P $D/probe_upstream.py $R && $P $D/probe_hint_row.py $R; } 2>&1 \
+  && $P $D/probe_upstream.py $R && $P $D/probe_hint_row.py $R \
+  && { [[ $A != bm_* ]] || $P $D/control_workspace_shuffle.py $R; }; } 2>&1 \
   | grep -v "Warning\|sched.step\|Consider\|patch\|warnings.warn\|inactive_drift" > $LOG
 STATUS=$?
 $P $D/run_manifest.py finish $RUN $LOG
