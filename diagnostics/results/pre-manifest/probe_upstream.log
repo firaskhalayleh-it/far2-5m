@@ -1,0 +1,7 @@
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 90.0%  (majority 56.3%)
+ordering bit from owner slot (T=8):            48.6%  (majority 50.1%)
+ordering bit from entity state E_first:        62.4%
+ordering bit from entity state E_second:       63.3%
+ordering bit from E_first - E_second:          67.8%
+'sum >= 10' from E_first (upstream sanity):    56.8%

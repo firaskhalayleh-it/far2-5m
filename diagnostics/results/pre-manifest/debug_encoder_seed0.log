@@ -1,0 +1,40 @@
+  telemetry["inactive_drift"] = float(drift)
+[run1000_capped32] encoder debug, broken-pair variables, train 4164 test 1796
+
+A. probe 'left of GEQ' at the variable's own hint-row token, by encoder stage:
+   input             62.2%
+   L0_after_attn     62.8%
+   L0_after_mlp      62.3%
+   H                 62.2%
+
+B. encoder self-attention from the variable token (mean over tokens), per head:
+   from its hint-row token:
+     left nbr             h0: 0.5%  h1: 0.5%  h2: 0.4%  h3: 0.5%
+     self                 h0: 0.6%  h1: 0.6%  h2: 0.6%  h3: 0.5%
+     right nbr            h0: 0.5%  h1: 0.5%  h2: 0.4%  h3: 0.5%
+     rest of clause       h0: 0.8%  h1: 0.8%  h2: 0.7%  h3: 0.8%
+     same var elsewhere   h0: 1.2%  h1: 1.2%  h2: 1.2%  h3: 1.1%
+     everything else      h0:96.4%  h1:96.5%  h2:96.7%  h3:96.7%
+   from its sum-row token:
+     left nbr             h0: 0.5%  h1: 1.3%  h2: 0.5%  h3: 0.5%
+     self                 h0: 0.6%  h1: 0.5%  h2: 0.6%  h3: 0.5%
+     right nbr            h0: 0.5%  h1: 0.6%  h2: 0.4%  h3: 0.6%
+     rest of clause       h0: 2.3%  h1: 2.3%  h2: 2.2%  h3: 2.9%
+     same var elsewhere   h0: 1.3%  h1: 1.2%  h2: 1.2%  h3: 1.1%
+     everything else      h0:94.8%  h1:94.1%  h2:95.1%  h3:94.4%
+
+C. rank of the right neighbour among all keys for a hint-row variable token (lower = easier to find),
+   using each head's own q.k scores, by position of the token:
+   pos>=100  median rank of right neighbour: h0:105  h1:105  h2:136  h3:108   (n=4096, sequence length ~178)
+
+D. embedding norms: token 17.9 | position 17.9 | digit significance 0.36 | default-init reference 17.9
+   symbreak sequence lengths: 164-206; hint rows occupy the last ~25 context tokens
+   cosine(pos k, pos k+1): positions 0-50 0.008 | 100-150 -0.006 | 150-200 0.004 | 300-400 0.006
+
+E/F. per-token gradient norm of the answer loss at H, and final slot cross-attention mass per token:
+   sum     grad/token 6.35e-05 ( 1.00x sum)   slot attention/token 0.0056
+   prod    grad/token 7.08e-05 ( 1.11x sum)   slot attention/token 0.0056
+   hint    grad/token 3.14e-05 ( 0.50x sum)   slot attention/token 0.0052
+   filler  grad/token 5.50e-05 ( 0.87x sum)   slot attention/token 0.0055
+   query   grad/token 4.29e-05 ( 0.68x sum)   slot attention/token 0.0052
+   other   grad/token 6.61e-06 ( 0.10x sum)   slot attention/token 0.0050

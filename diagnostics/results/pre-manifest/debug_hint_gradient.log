@@ -1,0 +1,10 @@
+  telemetry["inactive_drift"] = float(drift)
+[seeds/route_seed0 @ 500] dLoss/dlogit per token for the owning slot of each BROKEN pair (negative = pull)
+  sum   rows: own pair +6.28e-07   other pairs -2.40e-07
+  prod  rows: own pair -1.61e-06   other pairs +4.81e-07
+  hint  rows: own pair -9.24e-08   other pairs -7.76e-08
+  telemetry["inactive_drift"] = float(drift)
+[seeds/route_seed0 @ 1000] dLoss/dlogit per token for the owning slot of each BROKEN pair (negative = pull)
+  sum   rows: own pair +3.57e-06   other pairs +5.79e-07
+  prod  rows: own pair -1.54e-05   other pairs +9.56e-07
+  hint  rows: own pair -1.03e-07   other pairs -2.28e-07

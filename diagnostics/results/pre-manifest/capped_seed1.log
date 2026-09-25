@@ -1,0 +1,35 @@
+/Users/firas/hobbies/far2/far2/train/loop.py:238: UserWarning: Seems like `optimizer.step()` has been overridden after learning rate scheduler initialization. Please, make sure to call `optimizer.step()` before `lr_scheduler.step()`. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  self.sched.step()
+trained capped seed 1: 1000 updates in 6.2 min (5,765,853 params)
+[seeds/capped_seed1 @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |  11.1%     83.1%   19.2%
+   1 |  17.7%     87.6%   20.7%
+   2 |  23.6%     90.6%   22.5%
+   4 |  28.3%     92.0%   25.3%
+   8 |  31.3%     92.7%   27.1%
+  12 |  29.8%     92.1%   26.9%
+  16 |  26.3%     90.7%   26.5%
+  32 |   2.2%     66.6%   21.6%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         27.1%
+  partner (selection)             24.6%
+  half-sum (treated symmetric)    20.5%
+  other pair (binding)            19.6%
+  none (arithmetic)                8.3%
+  roots found (correct + partner):   51.7%
+  selection correct/(correct+partner):   52.4%
+broken accuracy by number of broken pairs R: R=1: 26.6%  R=2: 28.3%  R=4: 26.6%
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 91.2%  (majority 56.3%)
+ordering bit from owner slot (T=8):            50.3%  (majority 50.1%)
+ordering bit from entity state E_first:        64.5%
+ordering bit from entity state E_second:       61.2%
+ordering bit from E_first - E_second:          67.6%
+'sum >= 10' from E_first (upstream sanity):    55.7%
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 63.9%
+H at that row's GEQ token  -> 'pair's first var is left': 50.3%
+H at the hint-row var token -> 'pair's first var is left': 50.6%
+H at its sum/product-row tokens    -> 'left of GEQ': 52.2%

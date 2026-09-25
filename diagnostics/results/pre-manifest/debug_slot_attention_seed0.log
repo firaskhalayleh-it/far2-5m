@@ -1,0 +1,5 @@
+[run1000_capped32] owning slot's final cross-attention; uniform would be ~0.0056 per token
+  sum   rows: own pair 0.0059/token   other pairs 0.0055/token   ratio  1.08x
+  prod  rows: own pair 0.0063/token   other pairs 0.0055/token   ratio  1.15x
+  hint  rows: own pair 0.0053/token   other pairs 0.0053/token   ratio  1.00x
+  normalized entropy of slot attention: mean 0.990 (1.0 = uniform)
