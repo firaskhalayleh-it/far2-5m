@@ -237,6 +237,82 @@ This revision does not claim higher capability before a run.  It improves the
 learning path and prevents a toy task, a flat answer-laden initializer, an OOD
 mixture, or per-family retraining from satisfying the v0.4 gate.
 
+## Capacity-limited ownership (flagged, 2026-09-20)
+
+`ModelConfig.bind_norm = "softmax" | "capped"`; the default is unchanged and
+every preset, parameter count, and historical run keeps the softmax law.
+
+**The fault it addresses.** `B[e,s] = softmax_s(E_e^T W_B z_s)` normalizes per
+variable over slots, so variables never compete: any number of pairs may choose
+the same slot. On the label-free fixed14 arm at 1,000 updates (raw weights,
+768 fresh-ID symbreak episodes) the 8 pairs occupied 4.3 of the 12 concept
+slots and never more than 5. An answer read from a slot its pair owned alone
+was right 93.5% of the time; from a shared slot, 39.5%, and 91% of those
+errors were exactly a co-tenant's value. The stall was ownership/routing
+collapse, not representational capacity and not arithmetic.
+
+**The law.** Same scores, same parameters. `bind_sweeps` Sinkhorn-style sweeps
+alternate "each variable's ownership sums to 1" with "a slot's total ownership
+is at most `bind_capacity`", then a final row softmax. Capacity 2 is the
+design's own premise: a slot holds one shared concept (a symmetric pair) until
+SPLIT separates it. Variables absent from the episode hold no capacity. When
+variables outnumber capacity it degrades to balanced loading. The cap is a
+training-time pressure and must actually hold while the model trains: a model
+trained under it internalizes exclusive ownership (evaluated with the plain
+softmax it still spreads 8 pairs over 7.9 slots), whereas a 6-sweep cap that
+let 4.9 units sit in one slot, against sharp scores from 2,000 updates on
+variable-poor families, allowed the collapse to return (5.1 slots; enforcing
+the cap only at evaluation then restores the limit but not the accuracy).
+`bind_sweeps=32` converges on those scores and matched the 6-sweep scratch
+result (86.0% token / 39.8% exact at 1,000 updates) for about 10% more time
+per step. No labels, no
+weights, no data change, so C-vs-D parameter identity is preserved, and
+`run_foundation_curve.py --bind-norm` applies it to the slot-recurrent control
+as well: it repairs the shared substrate and is **not** evidence for the
+operators (D − C).
+
+**Why not the binding curriculum instead.** Switching `bind_weight` on reaches
+higher accuracy at the same budget, but solves the task at initialization
+through the entity path (exact gain Z0→T8 of +2.9 points against +22.4 for the
+capped law in the same scratch comparison). Labels buy a one-shot shortcut;
+competition buys recurrent computation, which is the claim under test.
+
+Scratch diagnostics only (single seed, 1,000 updates, raw weights, single-stage
+mixture); gate evidence comes from the registered foundation curve.
+
+## Encoder and routing repairs (flagged, 2026-09-25)
+
+All default off; each was motivated by an eval-only debug of a trained checkpoint
+(logs in `diagnostics/results/pre-manifest/`, narrative in `docs/RESEARCH_LOG.md`).
+
+- `enc_local_mix`: Canon-style zero-init projections of each token's left and right
+  neighbours before the encoder blocks. The debug found the one-layer encoder's
+  attention uniform (neighbour ~1/178) over untrained absolute positions, so a
+  relation row such as "X4 GEQ X5" was never encoded; an isolated bench showed only
+  local mixing (or a second layer) solves the two-hop relation.
+- `enc_qk_norm`, `cross_qk_norm`: scores = learned per-head scale × cos(q, k); score
+  std had moved only 0.33 → 0.4–1.3 in 1,000 updates.
+- `enc_pos="rope"`, `enc_clause_roles`: rotary positions and syntax-only clause
+  features; neither solved the relation alone and neither is in the selected arm.
+- `slot_query_entities`: each slot's cross-attention query adds a zero-init
+  projection of the entity states it owns. Query side only; values stay H, so no
+  encoder content can bypass the workspace. Slot attention entropy fell 0.99 → 0.45.
+- `slot_read_clauses`: an extra slot read over SEP-delimited clause means; it did
+  not change the result and is not in the selected arm.
+
+## SPLIT frozen (2026-09-25)
+
+SPLIT/EXPAND stay in the code, dormant by default, and leave the critical path.
+Evidence, label-free, 1,000 updates, raw weights, T=8, fresh-ID symbreak:
+oracle SPLIT (perfect, task-condition timing on every broken pair) scored 3.9%
+exact against 41.1% for the operator-free capped substrate, and on the repaired
+substrate (encoder local mixing + QK-norm, entity-steered routing) 11.3% against
+55.2%, with other-pair leakage 32.0% against 8.6% and root selection at chance in
+both (50.6%). Even a perfect decision policy makes the workspace worse, so no
+learned controller is trained until a correct static model exists. SPLIT returns
+only as an efficiency claim: match that static model's correctness while
+separating representations on demand at lower slot compute.
+
 ## Shared I/O contract
 
 - **One 72-token mathematical vocabulary** for all families

@@ -1,0 +1,15 @@
+[seeds/route_seed0] owning slot, attention mass per token on its OWN rows (uniform ~0.0056), per iteration x head
+  iter 0: h0 sum 0.022 prod 0.051 hint 0.002 | h1 sum 0.055 prod 0.067 hint 0.000 | h2 sum 0.016 prod 0.033 hint 0.003 | h3 sum 0.044 prod 0.064 hint 0.001
+  iter 1: h0 sum 0.022 prod 0.052 hint 0.002 | h1 sum 0.055 prod 0.067 hint 0.000 | h2 sum 0.016 prod 0.034 hint 0.003 | h3 sum 0.044 prod 0.064 hint 0.001
+  iter 2: h0 sum 0.022 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.034 hint 0.003 | h3 sum 0.044 prod 0.064 hint 0.001
+  iter 3: h0 sum 0.023 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.035 hint 0.003 | h3 sum 0.044 prod 0.064 hint 0.001
+  iter 4: h0 sum 0.023 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.034 hint 0.003 | h3 sum 0.044 prod 0.064 hint 0.001
+  iter 5: h0 sum 0.023 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.034 hint 0.003 | h3 sum 0.044 prod 0.063 hint 0.001
+  iter 6: h0 sum 0.023 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.034 hint 0.003 | h3 sum 0.044 prod 0.063 hint 0.001
+  iter 7: h0 sum 0.023 prod 0.053 hint 0.002 | h1 sum 0.055 prod 0.068 hint 0.000 | h2 sum 0.016 prod 0.033 hint 0.003 | h3 sum 0.044 prod 0.062 hint 0.001
+
+raw score the owning slot gives its variable's token in each row (iter 7):
+  h0: sum-row X -0.37  prod-row X -0.48  hint-row X +0.08
+  h1: sum-row X -0.30  prod-row X -0.40  hint-row X -0.19
+  h2: sum-row X -0.34  prod-row X -0.45  hint-row X +0.05
+  h3: sum-row X -0.67  prod-row X -0.33  hint-row X -0.46

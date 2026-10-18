@@ -1,0 +1,46 @@
+trained clause seed 0: 1000 updates in 8.5 min (6,485,217 params)
+[seeds/clause_seed0 @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |   6.6%     77.4%   19.4%
+   1 |  24.8%     90.6%   24.5%
+   2 |  41.6%     95.9%   28.9%
+   4 |  50.3%     97.8%   35.8%
+   8 |  52.9%     98.3%   41.7%
+  12 |  51.3%     97.6%   42.8%
+  16 |  42.3%     95.3%   41.1%
+  32 |   2.7%     68.8%   27.8%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         41.7%
+  partner (selection)             39.9%
+  half-sum (treated symmetric)     6.7%
+  other pair (binding)             7.9%
+  none (arithmetic)                3.7%
+  roots found (correct + partner):   81.6%
+  selection correct/(correct+partner):   51.1%
+broken accuracy by number of broken pairs R: R=1: 39.0%  R=2: 40.9%  R=4: 42.9%
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 95.5%  (majority 56.3%)
+ordering bit from owner slot (T=8):            50.8%  (majority 50.1%)
+ordering bit from entity state E_first:        100.0%
+ordering bit from entity state E_second:       100.0%
+ordering bit from E_first - E_second:          100.0%
+'sum >= 10' from E_first (upstream sanity):    56.9%
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 100.0%
+H at that row's GEQ token  -> 'pair's first var is left': 100.0%
+H at the hint-row var token -> 'pair's first var is left': 64.0%
+H at its sum/product-row tokens    -> 'left of GEQ': 51.1%
+[seeds/clause_seed0] clause attention of the owning slot; uniform ~0.033 per clause
+  sum   clause: own pair 0.038   other pairs 0.032
+  prod  clause: own pair 0.039   other pairs 0.031
+  hint  clause: own pair 0.027   other pairs 0.027
+[seeds/clause_seed0] owning slot's final cross-attention; uniform would be ~0.0056 per token
+  sum   rows: own pair 0.0396/token   other pairs 0.0024/token   ratio 16.67x
+  prod  rows: own pair 0.0506/token   other pairs 0.0025/token   ratio 20.34x
+  hint  rows: own pair 0.0014/token   other pairs 0.0015/token   ratio  0.90x
+  normalized entropy of slot attention: mean 0.474 (1.0 = uniform)
+[seeds/clause_seed0 @ 1000] dLoss/dlogit per token for the owning slot of each BROKEN pair (negative = pull)
+  sum   rows: own pair -8.78e-06   other pairs +1.11e-06
+  prod  rows: own pair -3.14e-05   other pairs +2.45e-06
+  hint  rows: own pair +3.13e-07   other pairs +3.39e-07

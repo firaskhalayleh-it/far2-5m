@@ -1,0 +1,38 @@
+trained route seed 0: 1000 updates in 7.8 min (6,073,697 params)
+[seeds/route_seed0 @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |  18.9%     87.6%   21.7%
+   1 |  36.5%     94.8%   24.2%
+   2 |  45.5%     97.2%   26.9%
+   4 |  50.8%     98.3%   34.0%
+   8 |  55.2%     98.6%   41.3%
+  12 |  52.3%     98.2%   39.9%
+  16 |  45.8%     96.6%   38.0%
+  32 |   5.7%     73.8%   28.8%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         41.3%
+  partner (selection)             38.0%
+  half-sum (treated symmetric)     8.1%
+  other pair (binding)             8.6%
+  none (arithmetic)                4.1%
+  roots found (correct + partner):   79.3%
+  selection correct/(correct+partner):   52.1%
+broken accuracy by number of broken pairs R: R=1: 40.4%  R=2: 39.7%  R=4: 42.4%
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 96.9%  (majority 56.3%)
+ordering bit from owner slot (T=8):            50.9%  (majority 50.1%)
+ordering bit from entity state E_first:        100.0%
+ordering bit from entity state E_second:       100.0%
+ordering bit from E_first - E_second:          100.0%
+'sum >= 10' from E_first (upstream sanity):    56.0%
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 100.0%
+H at that row's GEQ token  -> 'pair's first var is left': 100.0%
+H at the hint-row var token -> 'pair's first var is left': 72.7%
+H at its sum/product-row tokens    -> 'left of GEQ': 51.7%
+[seeds/route_seed0] owning slot's final cross-attention; uniform would be ~0.0056 per token
+  sum   rows: own pair 0.0350/token   other pairs 0.0020/token   ratio 17.39x
+  prod  rows: own pair 0.0544/token   other pairs 0.0027/token   ratio 20.00x
+  hint  rows: own pair 0.0015/token   other pairs 0.0016/token   ratio  0.94x
+  normalized entropy of slot attention: mean 0.451 (1.0 = uniform)

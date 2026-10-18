@@ -1,0 +1,22 @@
+/Users/firas/hobbies/far2/far2/train/loop.py:238: UserWarning: Seems like `optimizer.step()` has been overridden after learning rate scheduler initialization. Please, make sure to call `optimizer.step()` before `lr_scheduler.step()`. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  self.sched.step()
+trained 1000 updates, oracle split, in 7.4 min
+[run1000_oracle_split @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |   1.2%     67.4%   14.7%
+   1 |   1.6%     71.1%   14.5%
+   2 |   2.0%     73.4%   15.6%
+   4 |   3.3%     74.8%   16.8%
+   8 |   3.9%     75.6%   19.6%
+  12 |   4.1%     75.1%   20.1%
+  16 |   2.8%     74.1%   20.2%
+  32 |   0.0%     39.2%   17.4%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         19.6%
+  partner (selection)             19.7%
+  half-sum (treated symmetric)    15.2%
+  other pair (binding)            33.9%
+  none (arithmetic)               11.7%
+  roots found (correct + partner):   39.2%
+broken accuracy by number of broken pairs R: R=1: 15.7%  R=2: 18.6%  R=4: 21.1%

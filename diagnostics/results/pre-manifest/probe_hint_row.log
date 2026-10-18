@@ -1,0 +1,5 @@
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 63.5%
+H at that row's GEQ token  -> 'pair's first var is left': 49.6%
+H at the hint-row var token -> 'pair's first var is left': 50.5%
+H at its sum/product-row tokens    -> 'left of GEQ': 51.9%

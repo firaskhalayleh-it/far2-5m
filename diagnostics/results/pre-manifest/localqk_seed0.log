@@ -1,0 +1,38 @@
+trained localqk seed 0: 1000 updates in 7.3 min (5,971,297 params)
+[seeds/localqk_seed0 @ 1000] raw weights, symbreak fresh-ID R in {1,2,4}, 768 episodes
+   T |  exact symmetric  broken
+   0 |  37.3%     95.2%   25.7%
+   1 |  38.7%     95.4%   26.4%
+   2 |  40.0%     95.6%   27.2%
+   4 |  41.3%     95.8%   28.8%
+   8 |  41.5%     95.8%   30.1%
+  12 |  41.0%     95.3%   31.8%
+  16 |  38.0%     94.4%   32.3%
+  32 |  11.1%     80.3%   29.6%
+
+broken-pair answers at T=8 (n=1749):
+  correct                         30.1%
+  partner (selection)             25.7%
+  half-sum (treated symmetric)    15.4%
+  other pair (binding)            21.3%
+  none (arithmetic)                7.5%
+  roots found (correct + partner):   55.8%
+  selection correct/(correct+partner):   53.9%
+broken accuracy by number of broken pairs R: R=1: 29.2%  R=2: 29.8%  R=4: 30.4%
+broken pairs: train 4181, test 898
+POSITIVE CONTROL  'sum >= 10' from owner slot: 90.2%  (majority 56.3%)
+ordering bit from owner slot (T=8):            51.2%  (majority 50.1%)
+ordering bit from entity state E_first:        100.0%
+ordering bit from entity state E_second:       100.0%
+ordering bit from E_first - E_second:          100.0%
+'sum >= 10' from E_first (upstream sanity):    56.7%
+broken-pair variable occurrences: train 8362, test 1796; majority 50%
+H at the variable's own hint-row token -> 'left of GEQ': 100.0%
+H at that row's GEQ token  -> 'pair's first var is left': 100.0%
+H at the hint-row var token -> 'pair's first var is left': 63.0%
+H at its sum/product-row tokens    -> 'left of GEQ': 51.0%
+[seeds/localqk_seed0] owning slot's final cross-attention; uniform would be ~0.0056 per token
+  sum   rows: own pair 0.0056/token   other pairs 0.0054/token   ratio  1.04x
+  prod  rows: own pair 0.0059/token   other pairs 0.0055/token   ratio  1.06x
+  hint  rows: own pair 0.0058/token   other pairs 0.0058/token   ratio  1.00x
+  normalized entropy of slot attention: mean 0.993 (1.0 = uniform)

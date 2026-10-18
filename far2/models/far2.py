@@ -28,6 +28,7 @@ v0.3 causal controls (see docs/DESIGN.md):
 Non-learned policies still create their controller modules so parameter counts
 stay identical to far2_full; they simply never consult them."""
 
+import math
 import random
 
 import torch
@@ -37,11 +38,16 @@ import torch.nn.functional as F
 from far2.config import INCONSISTENT, UNDERDET, ModelConfig
 from far2.data.vocab import N_VARS, VOCAB
 from far2.models.base import ModelOutput, ReasoningModel
-from far2.models.layers import (MASK_FILL, MHA, MLP, Block, attn_entropy,
-                                n_params, sig_embedding)
+from far2.models.layers import (MASK_FILL, MHA, MLP, Block, LocalMix,
+                                attn_entropy, n_params, rope_tables,
+                                sig_embedding)
 from far2.models.monitor import collision_signals
 
 KEEP, EXPAND, SPLIT = 0, 1, 2
+CLAUSE_SEPARATORS = ("BOS", "CTX", "SEP", "Q")
+CLAUSE_OPERATORS = ("PLUS", "MINUS", "TIMES", "DIV", "POW", "EQ", "GEQ",
+                    "LEQ", "NEQ", "SQRT", "MOD")
+CLAUSE_POS_MAX = 15
 CONTINUE, RECONSIDER, HALT = 0, 1, 2
 
 
@@ -98,6 +104,8 @@ class FAR2Model(ReasoningModel):
         assert cfg.reconsider_policy in ("learned", "random")
         assert cfg.oracle_action in ("split", "expand")
         assert cfg.cross_mode in ("standard", "competitive")
+        assert cfg.bind_norm in ("softmax", "capped")
+        assert cfg.bind_capacity > 0 and cfg.bind_sweeps >= 1
         assert cfg.n_registers + cfg.init_slots <= cfg.max_slots
         if cfg.reconsider_policy == "random":
             # the reset-at-random control runs at a fixed budget by design
@@ -108,8 +116,25 @@ class FAR2Model(ReasoningModel):
         self.pos = nn.Embedding(cfg.max_seq_len, d)
         self.sig = sig_embedding(d) if cfg.digit_sig else None
         self.encoder = nn.ModuleList(
-            Block(d, cfg.n_heads, cfg.mlp_mult) for _ in range(cfg.n_encoder_layers))
+            Block(d, cfg.n_heads, cfg.mlp_mult, qk_norm=cfg.enc_qk_norm)
+            for _ in range(cfg.n_encoder_layers))
         self.enc_ln = nn.LayerNorm(d)
+        self.local_mix = LocalMix(d) if cfg.enc_local_mix else None
+        assert cfg.enc_pos in ("absolute", "rope")
+        if cfg.enc_clause_roles:
+            # Token ids alone decide both features; no values or labels.
+            self.clause_pos = nn.Embedding(CLAUSE_POS_MAX + 1, d)
+            self.clause_op = nn.Embedding(cfg.vocab_size, d)
+            nn.init.normal_(self.clause_pos.weight, std=0.02)
+            nn.init.normal_(self.clause_op.weight, std=0.02)
+            is_sep = torch.zeros(cfg.vocab_size, dtype=torch.bool)
+            is_op = torch.zeros(cfg.vocab_size, dtype=torch.bool)
+            for name in CLAUSE_SEPARATORS:
+                is_sep[VOCAB.t(name)] = True
+            for name in CLAUSE_OPERATORS:
+                is_op[VOCAB.t(name)] = True
+            self.register_buffer("is_clause_sep", is_sep, persistent=False)
+            self.register_buffer("is_clause_op", is_op, persistent=False)
 
         # ② slot seeds (+ fixed unit directions for deterministic eval-time SPLIT)
         self.seeds = nn.Parameter(torch.randn(S, d) * 0.02)
@@ -122,7 +147,18 @@ class FAR2Model(ReasoningModel):
         self.ln_read = nn.LayerNorm(d)
         self.self_attn = MHA(d, cfg.n_heads)
         self.ln_cross = nn.LayerNorm(d)
-        self.cross_attn = MHA(d, cfg.n_heads)
+        self.cross_attn = MHA(d, cfg.n_heads, qk_norm=cfg.cross_qk_norm)
+        if cfg.slot_read_clauses:
+            self.clause_attn = MHA(d, cfg.n_heads, qk_norm=cfg.cross_qk_norm)
+            self.ln_clause = nn.LayerNorm(d)
+            sep = torch.zeros(cfg.vocab_size, dtype=torch.bool)
+            for name in CLAUSE_SEPARATORS:
+                sep[VOCAB.t(name)] = True
+            self.register_buffer("clause_sep_ids", sep, persistent=False)
+        if cfg.slot_query_entities:
+            assert cfg.binding, "slot_query_entities needs the binding substrate"
+            self.slot_query_entity = nn.Linear(d, d, bias=False)
+            nn.init.zeros_(self.slot_query_entity.weight)
         self.ln_mlp = nn.LayerNorm(d)
         self.mlp = MLP(d, cfg.mlp_mult, cfg.core_act)
         self.gate = nn.Linear(2 * d, d)
@@ -201,10 +237,50 @@ class FAR2Model(ReasoningModel):
         x = self.tok(ids) + self.pos(torch.arange(L, device=ids.device))[None]
         if self.sig is not None:
             x = x + self.sig(batch["digit_sig"])
+        if self.cfg.enc_clause_roles:
+            x = x + self._clause_roles(ids)
+        if self.local_mix is not None:
+            x = self.local_mix(x, batch["pad_mask"].to(x.dtype))
         mask = torch.where(batch["pad_mask"], 0.0, MASK_FILL)[:, None, None, :]
+        rope = (rope_tables(L, self.cfg.d_model // self.cfg.n_heads, ids.device)
+                if self.cfg.enc_pos == "rope" else None)
         for blk in self.encoder:
-            x = blk(x, mask)
+            x = blk(x, mask, rope=rope)
         return self.enc_ln(x), mask
+
+    def _clause_memory(self, H, batch):
+        """Mean-pool H over each SEP-delimited clause -> [B,C,d] plus an additive
+        mask.  Separators open a clause; padding is excluded."""
+        ids, pad = batch["input_ids"], batch["pad_mask"]
+        B, L, d = H.shape
+        seg = self.clause_sep_ids[ids].long().cumsum(1)           # [B,L]
+        C = int(seg.max()) + 1
+        w = pad.to(H.dtype)
+        pooled = H.new_zeros(B, C, d).scatter_add_(
+            1, seg[..., None].expand(-1, -1, d), H * w[..., None])
+        count = H.new_zeros(B, C).scatter_add_(1, seg, w)
+        mem = pooled / count.clamp_min(1.0)[..., None]
+        mask = torch.where(count > 0, 0.0, MASK_FILL)[:, None, None, :]
+        return mem, mask
+
+    def _clause_roles(self, ids):
+        """Offset within the clause and the clause's first relation operator.
+        "X4 GEQ X5" gives X4 (offset 1, op GEQ) and X5 (offset 3, op GEQ);
+        "X4 PLUS X5 EQ ..." gives op PLUS. Separators start a clause."""
+        B, L = ids.shape
+        ar = torch.arange(L, device=ids.device).expand(B, L)
+        sep = self.is_clause_sep[ids]
+        start = torch.cummax(torch.where(sep, ar, torch.zeros_like(ar)), dim=1).values
+        offset = (ar - start).clamp_max(CLAUSE_POS_MAX)
+        seg = sep.long().cumsum(1)                                 # clause index
+        op_pos = torch.where(self.is_clause_op[ids], ar, torch.full_like(ar, L))
+        first = torch.full((B, L + 1), L, dtype=torch.long, device=ids.device)
+        first = first.scatter_reduce(1, seg, op_pos, reduce="amin")
+        pos = first.gather(1, seg)                                 # [B,L]
+        has_op = pos < L
+        op_id = ids.gather(1, pos.clamp_max(L - 1))
+        op_vec = self.clause_op(op_id) * has_op[..., None]
+        return self.clause_pos(offset) + op_vec
 
     def _entity_states(self, H, pad_mask, batch):
         """Contextual entity states E[e] from every rendered occurrence.
@@ -222,14 +298,30 @@ class FAR2Model(ReasoningModel):
         E = E + self.entity_mlp(self.entity_ln_mlp(E))
         return self.entity_ln(E) * present[..., None], present
 
-    def _bind_matrix(self, E, Z, active, ownership_bias=None):
+    def _bind_matrix(self, E, Z, active, ownership_bias=None, present=None):
         """B[e,s] = softmax_s(E_e^T W_B z_s / sqrt(d)) over active CONCEPT
         slots. Registers are masked before the softmax and can never own a
-        variable. Differentiable through both the entity and slot paths."""
+        variable. Differentiable through both the entity and slot paths.
+
+        bind_norm="capped" makes variables COMPETE for slots. A per-variable
+        softmax lets every pair choose the same favourite slot, and a slot
+        that holds several pairs returns a co-tenant's value to the decoder.
+        The sweeps alternate "each variable's ownership sums to 1" with "a
+        slot's total ownership is at most bind_capacity", on the same scores
+        and parameters. Variables absent from the episode hold no capacity."""
         scores = self.bind_W(E) @ Z.transpose(1, 2) / (self.cfg.d_model ** 0.5)
         if ownership_bias is not None:
             scores = scores + ownership_bias
         scores = scores + torch.where(active.bool(), 0.0, MASK_FILL)[:, None, :]
+        if self.cfg.bind_norm == "capped":
+            log_cap = math.log(self.cfg.bind_capacity)
+            absent = (None if present is None else
+                      torch.where(present.bool(), 0.0, MASK_FILL)[:, :, None])
+            for _ in range(self.cfg.bind_sweeps):
+                scores = scores - torch.logsumexp(scores, dim=-1, keepdim=True)
+                held = scores if absent is None else scores + absent
+                mass = torch.logsumexp(held, dim=-2, keepdim=True)
+                scores = scores - (mass - log_cap).clamp_min(0.0)
         return F.softmax(scores, dim=-1)                          # [B,V,S]
 
     def _semantic_split_children(self, parent, entity_x, entity_y, scale):
@@ -511,6 +603,7 @@ class FAR2Model(ReasoningModel):
         halt_feats_last = None
         signals = None
         cross_final = None
+        clause_final = None
         B_mat = None
         bind_src = None
         # PRE-ACTION signal window: the signal a controller could have seen
@@ -545,10 +638,29 @@ class FAR2Model(ReasoningModel):
             competitive = cfg.cross_mode == "competitive"
             slot_q_mask = (torch.where(active.bool(), 0.0, MASK_FILL)
                            [:, None, :, None] if competitive else None)
+            q_in = self.ln_cross(u)
+            ent_q = None
+            if cfg.slot_read_clauses and t == 0:
+                clause_mem, clause_mask = self._clause_memory(H, batch)
+            if cfg.slot_query_entities:
+                # Steering only: this vector reaches wq (scores), never the
+                # values, so the slot still receives nothing but H content.
+                own = self._bind_matrix(entity_states, Z,
+                                        active * (1 - reg_mask)[None],
+                                        ownership_bias, entity_present)
+                ent_q = self.slot_query_entity(own.transpose(1, 2) @ entity_states)
+                q_in = q_in + ent_q
             ca, cross_probs = self.cross_attn(
-                self.ln_cross(u), H, pad_mask, need_probs=need_cross_probs,
+                q_in, H, pad_mask, need_probs=need_cross_probs,
                 competitive=competitive, slot_mask=slot_q_mask)
             u = u + ca
+            if cfg.slot_read_clauses:
+                cq = self.ln_clause(u) + (ent_q if ent_q is not None else 0.0)
+                cla, clause_probs = self.clause_attn(
+                    cq, clause_mem, clause_mask, need_probs=collect)
+                u = u + cla
+                if collect:
+                    clause_final = clause_probs.detach().mean(1)       # [B,S,C]
             if collect and cross_probs is not None:
                 attn_ents.append(attn_entropy(cross_probs))
                 cross_final = cross_probs.detach().mean(1)          # [B,S,L]
@@ -590,7 +702,7 @@ class FAR2Model(ReasoningModel):
                 # otherwise collision search silently loses probability mass
                 # when it later excludes registers.
                 B_mat = self._bind_matrix(entity_states, Z, act_pair,
-                                          ownership_bias)
+                                          ownership_bias, entity_present)
 
             # ⑤ collision monitor — heuristic signal, no gradient path by design
             with torch.no_grad():
@@ -858,7 +970,7 @@ class FAR2Model(ReasoningModel):
             if cfg.binding:
                 decode_B = self._bind_matrix(
                     entity_states, Z, active * (1 - reg_mask)[None],
-                    ownership_bias)
+                    ownership_bias, entity_present)
                 decode_binding = self._answer_binding(decode_B, batch)
             if collect:
                 with torch.no_grad():
@@ -879,7 +991,7 @@ class FAR2Model(ReasoningModel):
             # binding loss, and telemetry.
             act_pair = active * (1 - reg_mask)[None]
             B_mat = self._bind_matrix(entity_states, Z, act_pair,
-                                      ownership_bias)
+                                      ownership_bias, entity_present)
             answer_binding = self._answer_binding(B_mat, batch)
         logits = self._decode(Q, Z, active, g_tok, answer_binding)
 
@@ -962,6 +1074,8 @@ class FAR2Model(ReasoningModel):
             telemetry["probe_preds"] = torch.stack(probe_preds, dim=1)   # [B,T,A]
         if collect and cross_final is not None:
             telemetry["cross_attn"] = cross_final                        # [B,S,L]
+            if clause_final is not None:
+                telemetry["clause_attn"] = clause_final                  # [B,S,C]
         if collect:
             # Required even at the v0.4.52 Z0 readout, where no recurrent
             # cross-attention step has produced `cross_final` yet.

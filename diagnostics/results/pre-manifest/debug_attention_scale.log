@@ -1,0 +1,6 @@
+fresh init  encoder self-attn: score std/head [0.335, 0.33, 0.333, 0.332] entropy 0.990 | |Wq| 10.34 |Wk| 10.32
+            slot cross-attn:   score std/head [0.329, 0.322, 0.375, 0.409] entropy 0.988 | |Wq| 10.32 |Wk| 10.36
+trained 1k  encoder self-attn: score std/head [0.752, 0.724, 1.313, 0.604] entropy 0.909 | |Wq| 10.89 |Wk| 10.84
+            slot cross-attn:   score std/head [0.506, 0.414, 0.469, 0.46] entropy 0.979 | |Wq| 10.67 |Wk| 10.66
+
+training settings: lr 3e-4, grad clip 0.5, AdamW(0.9,0.95), wd 0.01; 1,000 updates

@@ -39,6 +39,33 @@ class ModelConfig:
                                       # warm active slots from H before cycle 1;
                                       # shuffled is the causal content control
     goal_dim: int = 64
+    enc_pos: str = "absolute"         # absolute | rope: rotary relative
+                                      #   positions in encoder self-attention
+                                      #   on top of the absolute embedding
+    enc_local_mix: bool = False       # Canon-style left/right neighbour mixing
+                                      #   before the encoder blocks (zero-init)
+    enc_qk_norm: bool = False         # encoder self-attn scores = learned
+                                      #   per-head scale x cos(q, k)
+    cross_qk_norm: bool = False       # same for the slot cross-attention
+    slot_read_clauses: bool = False   # slots additionally attend over CLAUSES
+                                      #   (SEP-delimited rows mean-pooled from
+                                      #   H): ~30 relation items instead of ~180
+                                      #   tokens, so a row the loss does not yet
+                                      #   use is not starved by the softmax.
+                                      #   Values are pooled H only.
+    slot_query_entities: bool = False  # binding substrate: each slot's
+                                      #   cross-attention QUERY adds a zero-init
+                                      #   projection of the entity states it
+                                      #   owns (B^T E), so a slot can look up
+                                      #   the rows that mention its variables.
+                                      #   Query side only: values stay H, so no
+                                      #   entity content enters the slot
+    enc_clause_roles: bool = False    # syntax-only clause features added to
+                                      #   the encoder input, derived from token
+                                      #   ids like the digit-significance
+                                      #   embedding: offset within the
+                                      #   SEP-delimited clause, and the clause's
+                                      #   relation operator (PLUS/TIMES/GEQ/...)
 
     # far2: mechanisms (the ablation flags)
     adaptive_slots: bool = False      # O3/O4 EXPAND+SPLIT controller
@@ -67,6 +94,18 @@ class ModelConfig:
                                       #   binding-directed SPLIT, the binding
                                       #   curriculum loss, and ownership-based
                                       #   diagnostics
+    bind_norm: str = "softmax"        # softmax: every variable picks its slot
+                                      #   independently, so any number of pairs
+                                      #   may pile into one slot | capped: same
+                                      #   scores and parameters, but variables
+                                      #   compete — Sinkhorn-style sweeps hold a
+                                      #   slot's total ownership at or below
+                                      #   bind_capacity (no labels, no weights)
+    bind_capacity: float = 2.0        # capped: one shared concept (a symmetric
+                                      #   pair) per slot until SPLIT separates it
+    bind_sweeps: int = 32             # capped: row/column sweeps. The cap must
+                                      #   HOLD during training: 6 sweeps left 4.9
+                                      #   units in one slot once scores were sharp
     oracle_action: str = "split"      # repr_policy=="oracle": forced action
 
     # far2: stability (see docs/DESIGN.md)
