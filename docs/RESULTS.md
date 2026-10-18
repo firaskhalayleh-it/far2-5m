@@ -5,6 +5,11 @@ Date: 2026-08-29
 This file records measured results, separately from the pre-registered method
 in `CRITERIA.md`. It is not a claim that the full campaign passed.
 
+> **No longer the current record.** Results after 2026-08-29 — the EMA scoring
+> fix, capped ownership, the encoder and routing repairs, and the SPLIT freeze —
+> are in [RESEARCH_LOG.md](RESEARCH_LOG.md). This snapshot is kept unchanged as
+> history.
+
 ## v0.4.52 capability contract — IMPLEMENTED, NOT RUN
 
 The next revision now separates fresh-ID symbreak R∈{1,2,4} from OOD R=6,
