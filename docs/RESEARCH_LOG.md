@@ -63,3 +63,17 @@ cross-pair leakage. Verdict: the structural role fixes selection, this memory de
 breaks binding. Next (to pre-register): keys from identity only with the structural
 role in the filler; and an ablation giving the structural role to the route decoder
 query without any memory.
+
+## 2026-10-18 — commit IDs re-mapped (metadata-only history rewrite)
+History was rewritten without changing any file: commit-message trailers were
+removed, then author/committer e-mail was normalized for the public repository.
+Every tree is byte-identical, so the code each run used is unchanged, but the
+commit IDs recorded in the entries above and in
+`diagnostics/results/*.manifest.json` no longer resolve. Map:
+
+| Recorded | Now | Tree (unchanged) | Commit |
+|---|---|---|---|
+| c188495 | 3ab7e0f | db1377f7db4f | Binding memory behind a flag, pre-registered before any run |
+| 6c8ddfd | 1089aa7 | 0383ae9e6dfc | Binding memory: exact projection write replaces diverging delta rule |
+
+Check a row with `git rev-parse <Now>^{tree}`, which must match the tree column.
