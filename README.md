@@ -86,10 +86,9 @@ pinning commit, command, environment and seed.
 
 | Branch | Role |
 |---|---|
-| `far2` (default) | integration branch of the 5M research line; substrate repairs merged via PR #1, tag `r/2026-09-25-substrate-routing` |
+| `far2` (default) | integration branch of the 5M research line; substrate repairs merged in, tag `r/2026-09-25-substrate-routing` |
 | `exp/binding-memory` | binding-memory line, stacked on the repairs; open, not merged |
 | `exp/substrate-repairs` | merged into `far2` |
-| `main` | a separate project: Arabic-native language models, tool use, bilingual conversation |
 
 Each experiment is pre-registered on an `exp/*` branch, built behind a config
 flag, committed before it runs, measured with `diagnostics/measure.sh` (which
